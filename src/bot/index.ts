@@ -14,6 +14,10 @@ import {
   handleRejectionBrowse, handleRejectionExit,
 } from './handlers/fsm'
 import { handleInterviewBooking } from './handlers/interview'
+import {
+  handleAdminLogin, handleAdminLogout, handleAdminSync,
+  handleAdminStats, handleAdminMenu,
+} from './handlers/admin'
 import { PostgresSessionStorage } from '../db/session-storage'
 import { FsmState } from '../types/candidate'
 
@@ -24,6 +28,8 @@ bot.use(requireSession)
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 bot.command('start', startCommand)
+bot.command('admin', handleAdminLogin)
+bot.command('menu', handleAdminMenu)
 
 // ─── Language selection ───────────────────────────────────────────────────────
 bot.callbackQuery('lang:id', handleLangId)
@@ -39,6 +45,11 @@ bot.callbackQuery('rejection:exit', handleRejectionExit)
 
 // ─── Interview scheduling ────────────────────────────────────────────────────
 bot.callbackQuery(/^interview:/, handleInterviewBooking)
+
+// ─── Admin callbacks ─────────────────────────────────────────────────────────
+bot.callbackQuery('admin:sync', handleAdminSync)
+bot.callbackQuery('admin:stats', handleAdminStats)
+bot.callbackQuery('admin:logout', handleAdminLogout)
 
 // ─── Admin: document upload ───────────────────────────────────────────────────
 bot.on('message:document', async (ctx) => {
@@ -93,38 +104,29 @@ bot.on('message:text', async (ctx) => {
 })
 
 export async function startBot(): Promise<void> {
-  // Always start HTTP server for Calendly webhook (port 3000)
-  const calendlyHandler = await import('./handlers/calendly-webhook').then((m) => m.handleCalendlyWebhook)
+  const { handleCalendlyWebhook } = await import('./handlers/calendly-webhook')
+  const { handleRealtimeSession, handleRealtimeComplete, serveInterviewPage } = await import('./handlers/realtime-api')
+
+  // Shared HTTP request router
+  function routeRequest(req: Request, fallback?: (req: Request) => Response | Promise<Response>): Response | Promise<Response> {
+    const url = new URL(req.url)
+    if (url.pathname === '/webhooks/calendly' && req.method === 'POST') return handleCalendlyWebhook(req)
+    if (url.pathname === '/api/realtime/session' && req.method === 'POST') return handleRealtimeSession(req)
+    if (url.pathname === '/api/realtime/complete' && req.method === 'POST') return handleRealtimeComplete(req)
+    if (url.pathname === '/interview') return serveInterviewPage()
+    return fallback ? fallback(req) : new Response('OK', { status: 200 })
+  }
 
   if (env.TELEGRAM_WEBHOOK_URL) {
     const secret = env.TELEGRAM_WEBHOOK_SECRET ?? ''
     const tgHandler = webhookCallback(bot, 'bun', { secretToken: secret || undefined })
-    Bun.serve({
-      port: 3000,
-      fetch: (req) => {
-        const url = new URL(req.url)
-        if (url.pathname === '/webhooks/calendly' && req.method === 'POST') {
-          return calendlyHandler(req)
-        }
-        return tgHandler(req)
-      },
-    })
+    Bun.serve({ port: 3000, fetch: (req) => routeRequest(req, tgHandler) })
     await bot.api.setWebhook(env.TELEGRAM_WEBHOOK_URL, {
       secret_token: secret || undefined,
     })
     logger.info({ msg: 'bot started', mode: 'webhook', url: env.TELEGRAM_WEBHOOK_URL })
   } else {
-    // Polling mode for Telegram + HTTP server for Calendly
-    Bun.serve({
-      port: 3000,
-      fetch: (req) => {
-        const url = new URL(req.url)
-        if (url.pathname === '/webhooks/calendly' && req.method === 'POST') {
-          return calendlyHandler(req)
-        }
-        return new Response('OK', { status: 200 })
-      },
-    })
+    Bun.serve({ port: 3000, fetch: (req) => routeRequest(req) })
     bot.start()
     logger.info({ msg: 'bot started', mode: 'polling', webhookServer: 'http://localhost:3000' })
   }

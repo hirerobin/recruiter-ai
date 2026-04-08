@@ -10,6 +10,7 @@ export interface SessionData {
   currentField: DataCollectionField | null
   candidateData: CandidateData
   files: FileUploads
+  isAdmin: boolean
 }
 
 export type BotContext = Context & SessionFlavor<SessionData>
@@ -24,6 +25,7 @@ export function createSessionMiddleware(storage?: StorageAdapter<SessionData>) {
       currentField: null,
       candidateData: {},
       files: {},
+      isAdmin: false,
     }),
     ...(storage ? { storage } : {}),
   })

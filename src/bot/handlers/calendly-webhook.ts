@@ -94,7 +94,7 @@ export async function handleCalendlyWebhook(req: Request): Promise<Response> {
 
   // Write interview date to Google Sheets (interview_notes column)
   try {
-    await writeToSheets({ chat_id: chatId, status: 'qualified' }, `Interview: ${interviewDate}`)
+    await writeToSheets({ chat_id: chatId, status: 'qualified' }, { interviewDate })
     logger.info({ event: 'calendly_sheets_updated', chatId, interviewDate })
   } catch (err) {
     logger.error({ event: 'calendly_sheets_error', chatId, err })

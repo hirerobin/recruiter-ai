@@ -4,8 +4,10 @@ import type { BotContext } from './session'
 export async function requireSession(ctx: BotContext, next: NextFunction): Promise<void> {
   if (!ctx.chat) return next()
 
-  // Always allow /start through so candidates can (re)start
+  // Always allow /start and /admin through
   if (ctx.message?.text?.startsWith('/start')) return next()
+  if (ctx.message?.text?.startsWith('/admin')) return next()
+  if (ctx.message?.text?.startsWith('/menu')) return next()
 
   // Always allow callback queries (inline button clicks) through
   // so language selection, consent, rejection buttons work

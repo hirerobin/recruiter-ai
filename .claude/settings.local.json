@@ -57,7 +57,14 @@
       "Bash(powershell -Command \"Get-Command gh -ErrorAction SilentlyContinue | Select-Object Source\")",
       "Bash(winget install:*)",
       "Bash(export PATH=\"$PATH:/c/Program Files/GitHub CLI\")",
-      "Bash(gh repo:*)"
+      "Bash(gh repo:*)",
+      "Bash(powershell -Command \"Get-Process -Name 'bun' -ErrorAction SilentlyContinue | Select-Object Id\")",
+      "Bash(powershell -Command \"Start-Process 'C:\\\\Program Files\\\\Docker\\\\Docker\\\\Docker Desktop.exe'\")",
+      "Bash(break)",
+      "Bash(curl -s http://localhost:3000/interview)",
+      "Bash(powershell -NoProfile -Command \"Get-Process -Name 'bun' -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(pkill -f \"bun\")",
+      "Bash(taskkill //F //IM bun.exe)"
     ]
   }
 }

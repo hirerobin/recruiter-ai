@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AI Interview</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #1a1a2e);
+      color: var(--tg-theme-text-color, #e0e0e0);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    .header { text-align: center; margin-bottom: 30px; }
+    .header h1 { font-size: 20px; margin-bottom: 8px; }
+    .header p { font-size: 14px; opacity: 0.7; }
+
+    .avatar {
+      width: 120px; height: 120px; border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex; align-items: center; justify-content: center;
+      margin: 20px auto; position: relative;
+    }
+    .avatar svg { width: 60px; height: 60px; fill: white; }
+    .pulse {
+      position: absolute; width: 100%; height: 100%; border-radius: 50%;
+      border: 3px solid #667eea; animation: pulse 1.5s infinite; opacity: 0;
+    }
+    .pulse.active { opacity: 1; }
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 0.8; }
+      100% { transform: scale(1.4); opacity: 0; }
+    }
+
+    #status {
+      font-size: 16px; text-align: center; margin: 15px 0;
+      padding: 10px 20px; border-radius: 20px;
+      background: var(--tg-theme-secondary-bg-color, #16213e);
+    }
+
+    .btn {
+      padding: 16px 40px; border-radius: 12px; border: none;
+      font-size: 16px; font-weight: 600; cursor: pointer;
+      transition: all 0.2s; margin: 8px;
+    }
+    .btn-start {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+    .btn-start:hover { transform: scale(1.05); }
+    .btn-start:disabled { opacity: 0.5; transform: none; cursor: not-allowed; }
+    .btn-stop {
+      background: #e74c3c; color: white;
+    }
+    .btn-stop:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    .transcript {
+      width: 100%; max-width: 500px; margin-top: 20px;
+      max-height: 300px; overflow-y: auto;
+      border-radius: 12px; padding: 15px;
+      background: var(--tg-theme-secondary-bg-color, #16213e);
+      font-size: 14px; line-height: 1.5;
+    }
+    .transcript p { margin-bottom: 10px; }
+    .transcript .user { color: #667eea; }
+    .transcript .ai { color: #a0d468; }
+    .transcript .label { font-weight: 600; }
+
+    .timer { font-size: 24px; font-weight: 700; margin: 10px 0; }
+    .buttons { display: flex; gap: 10px; margin: 15px 0; }
+    .ending { text-align: center; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>AI Interview</h1>
+    <p id="jobTitle"></p>
+  </div>
+
+  <div class="avatar">
+    <div class="pulse" id="pulse"></div>
+    <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1 1.93c-3.94-.49-7-3.85-7-7.93h2c0 3.31 2.69 6 6 6s6-2.69 6-6h2c0 4.08-3.06 7.44-7 7.93V20h4v2H8v-2h4v-4.07z"/></svg>
+  </div>
+
+  <div class="timer" id="timer">00:00</div>
+  <div id="status">Tap "Start" to begin your interview</div>
+
+  <div class="buttons">
+    <button class="btn btn-start" id="startBtn" onclick="startCall()">Start Interview</button>
+    <button class="btn btn-stop" id="stopBtn" onclick="stopCall()" disabled>End Interview</button>
+  </div>
+
+  <div class="transcript" id="transcript" style="display:none;"></div>
+  <div class="ending" id="ending" style="display:none;"></div>
+
+  <audio id="audioOut" autoplay playsinline></audio>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) tg.expand();
+
+    // Parse URL params
+    const params = new URLSearchParams(window.location.search);
+    const chatId = params.get('chat_id') || '';
+    const job = params.get('job') || '';
+    const name = params.get('name') || '';
+    const lang = params.get('lang') || 'id';
+
+    document.getElementById('jobTitle').textContent = job ? `Position: ${job}` : '';
+
+    let pc = null;
+    let dc = null;
+    let timerInterval = null;
+    let seconds = 0;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    const transcriptLog = [];
+
+    function updateTimer() {
+      seconds++;
+      const m = String(Math.floor(seconds / 60)).padStart(2, '0');
+      const s = String(seconds % 60).padStart(2, '0');
+      document.getElementById('timer').textContent = `${m}:${s}`;
+    }
+
+    async function startCall() {
+      const statusEl = document.getElementById('status');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+
+      statusEl.textContent = 'Connecting...';
+      startBtn.disabled = true;
+
+      try {
+        // 1. Get ephemeral token from backend
+        const tokenRes = await fetch('/api/realtime/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, job, name, lang }),
+        });
+        if (!tokenRes.ok) throw new Error('Failed to create session');
+        const session = await tokenRes.json();
+        const ephemeralKey = session.client_secret.value;
+        const model = session.model || 'gpt-4o-realtime-preview-2024-12-17';
+
+        // 2. Create peer connection
+        pc = new RTCPeerConnection();
+
+        // 3. AI audio output + recording setup
+        const audioEl = document.getElementById('audioOut');
+        const audioCtx = new AudioContext();
+        const dest = audioCtx.createMediaStreamDestination();
+
+        // 4. Microphone
+        const ms = await navigator.mediaDevices.getUserMedia({ audio: true });
+        pc.addTrack(ms.getTracks()[0]);
+
+        // Mix local mic into recording
+        const localSource = audioCtx.createMediaStreamSource(ms);
+        localSource.connect(dest);
+
+        // When remote AI audio arrives, mix it into recording too
+        pc.ontrack = (e) => {
+          audioEl.srcObject = e.streams[0];
+          const remoteSource = audioCtx.createMediaStreamSource(e.streams[0]);
+          remoteSource.connect(dest);
+        };
+
+        // Start recording the mixed audio
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(dest.stream, { mimeType: 'audio/webm;codecs=opus' });
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.start(1000); // chunk every 1s
+
+        // 5. Data channel for events
+        dc = pc.createDataChannel('oai-events');
+        dc.onmessage = handleEvent;
+        dc.onopen = () => {
+          statusEl.textContent = lang === 'id' ? 'Terhubung — silakan berbicara' : 'Connected — speak now';
+          document.getElementById('pulse').classList.add('active');
+          timerInterval = setInterval(updateTimer, 1000);
+          document.getElementById('transcript').style.display = 'block';
+        };
+
+        // 6. SDP offer
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // 7. Exchange SDP with OpenAI
+        const sdpRes = await fetch(
+          `https://api.openai.com/v1/realtime?model=${model}`,
+          {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${ephemeralKey}`,
+              'Content-Type': 'application/sdp',
+            },
+            body: offer.sdp,
+          }
+        );
+        if (!sdpRes.ok) throw new Error(`SDP exchange failed: ${sdpRes.status}`);
+        const answerSdp = await sdpRes.text();
+        await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+        stopBtn.disabled = false;
+      } catch (err) {
+        console.error('Start failed:', err);
+        statusEl.textContent = `Error: ${err.message}`;
+        startBtn.disabled = false;
+      }
+    }
+
+    function handleEvent(e) {
+      let event;
+      try { event = JSON.parse(e.data); } catch { return; }
+
+      switch (event.type) {
+        case 'conversation.item.input_audio_transcription.completed':
+          if (event.transcript?.trim()) {
+            transcriptLog.push({ role: 'user', text: event.transcript.trim() });
+            renderTranscript();
+          }
+          break;
+        case 'response.audio_transcript.done':
+          if (event.transcript?.trim()) {
+            transcriptLog.push({ role: 'assistant', text: event.transcript.trim() });
+            renderTranscript();
+          }
+          break;
+        case 'error':
+          console.error('Realtime error:', event.error);
+          break;
+      }
+    }
+
+    function renderTranscript() {
+      const div = document.getElementById('transcript');
+      div.innerHTML = transcriptLog.map(t =>
+        `<p class="${t.role}"><span class="label">${t.role === 'user' ? (lang === 'id' ? 'Anda' : 'You') : 'AI'}:</span> ${t.text}</p>`
+      ).join('');
+      div.scrollTop = div.scrollHeight;
+    }
+
+    async function stopCall() {
+      clearInterval(timerInterval);
+      document.getElementById('pulse').classList.remove('active');
+      document.getElementById('status').textContent = lang === 'id' ? 'Interview selesai' : 'Interview complete';
+      document.getElementById('stopBtn').disabled = true;
+
+      // Stop recording and get audio blob
+      let audioBlob = null;
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        await new Promise(resolve => {
+          mediaRecorder.onstop = resolve;
+          mediaRecorder.stop();
+        });
+        audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+      }
+
+      // Close connections
+      if (dc) dc.close();
+      if (pc) {
+        pc.getSenders().forEach(s => s.track?.stop());
+        pc.close();
+      }
+
+      const endingEl = document.getElementById('ending');
+      endingEl.style.display = 'block';
+      endingEl.innerHTML = lang === 'id'
+        ? '<p>Menyimpan hasil interview...</p>'
+        : '<p>Saving interview results...</p>';
+
+      try {
+        // Upload audio + transcript together via FormData
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('job', job);
+        formData.append('name', name);
+        formData.append('duration_seconds', String(seconds));
+        formData.append('transcript', JSON.stringify(transcriptLog));
+        if (audioBlob) {
+          formData.append('audio', audioBlob, `interview_${chatId}.webm`);
+        }
+
+        const res = await fetch('/api/realtime/complete', {
+          method: 'POST',
+          body: formData,
+        });
+        const result = await res.json();
+
+        endingEl.innerHTML = lang === 'id'
+          ? `<p>Interview selesai! Terima kasih ${name}.</p><p>Anda bisa menutup halaman ini.</p>`
+          : `<p>Interview complete! Thank you ${name}.</p><p>You can close this page.</p>`;
+
+        // Close Telegram Mini App after a short delay
+        if (tg) setTimeout(() => tg.close(), 3000);
+      } catch (err) {
+        endingEl.innerHTML = `<p>Error saving results. Please contact the recruiter.</p>`;
+      }
+    }
+  </script>
+</body>
+</html>

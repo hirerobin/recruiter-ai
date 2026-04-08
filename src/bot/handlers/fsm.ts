@@ -302,7 +302,31 @@ async function runScoring(ctx: BotContext): Promise<void> {
     return
   }
 
-  // ── Interview scheduling (isolated from scoring errors) ────────────────────
+  // ── AI Voice Interview (Mini App) ───────────────────────────────────────────
+  if (passed && env.PUBLIC_URL) {
+    const interviewParams = new URLSearchParams({
+      chat_id: id,
+      job: ctx.session.appliedJob ?? '',
+      name: data.name ?? '',
+      lang: l,
+    })
+    const interviewUrl = `${env.PUBLIC_URL}/interview?${interviewParams}`
+
+    const aiInterviewKb = new InlineKeyboard()
+      .webApp(
+        l === 'id' ? '🎙 Mulai AI Interview' : '🎙 Start AI Interview',
+        interviewUrl
+      )
+
+    await ctx.reply(
+      l === 'id'
+        ? '🎙 *Langkah berikutnya: AI Interview*\n\nSebelum interview dengan recruiter, silakan lakukan interview singkat dengan AI kami (5-10 menit).'
+        : '🎙 *Next step: AI Interview*\n\nBefore the recruiter interview, please complete a short AI interview (5-10 minutes).',
+      { parse_mode: 'Markdown', reply_markup: aiInterviewKb }
+    )
+  }
+
+  // ── Calendly scheduling ────────────────────────────────────────────────────
   if (passed) {
     const calendlyBase = env.CALENDLY_URL
     if (calendlyBase) {

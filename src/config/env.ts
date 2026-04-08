@@ -5,6 +5,7 @@ const envSchema = z.object({
   TELEGRAM_WEBHOOK_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   TELEGRAM_WEBHOOK_SECRET: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   ADMIN_TELEGRAM_CHAT_IDS: z.string().min(1, 'ADMIN_TELEGRAM_CHAT_IDS is required'),
+  ADMIN_PASSWORD: z.string().min(1, 'ADMIN_PASSWORD is required'),
   RECRUITER_TELEGRAM_CHAT_ID: z.string().min(1, 'RECRUITER_TELEGRAM_CHAT_ID is required'),
   OPENAI_API_KEY: z.string().min(1, 'OPENAI_API_KEY is required'),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
@@ -18,6 +19,9 @@ const envSchema = z.object({
   GOOGLE_DRIVE_REFRESH_TOKEN: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   CALENDLY_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
   CALENDLY_WEBHOOK_SIGNING_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+  PUBLIC_URL: z.preprocess((v) => (v === '' ? undefined : v), z.string().url().optional()),
+  GOOGLE_JOBS_SPREADSHEET_ID: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
+  GOOGLE_JOBS_SHEET_NAME: z.preprocess((v) => (v === '' ? undefined : v), z.string().optional()),
   NODE_ENV: z.preprocess(
     (v) => (v === 'test' ? 'development' : v),
     z.enum(['development', 'production']).default('development')

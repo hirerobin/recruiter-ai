@@ -37,8 +37,13 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
     return
   }
 
-  // Prefix chatId so the agent can extract it for applyTriggerTool
-  const messageWithContext = `[CHAT_ID:${chatId}]\n${text}`
+  // Build context: include replied-to message if candidate is replying to a specific bot message
+  const replyToText = ctx.message?.reply_to_message?.text
+  let messageWithContext = `[CHAT_ID:${chatId}]\n`
+  if (replyToText) {
+    messageWithContext += `[REPLYING TO: ${replyToText}]\n`
+  }
+  messageWithContext += text
 
   let reply: string
   try {
@@ -62,7 +67,10 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   const pendingJob = consumePendingApply(chatId)
   if (pendingJob !== null) {
     ctx.session.appliedJob = pendingJob
-    if (reply.trim()) await ctx.reply(reply, { parse_mode: 'HTML' })
+    if (reply.trim()) {
+      try { await ctx.reply(reply, { parse_mode: 'HTML' }) }
+      catch { await ctx.reply(reply.replace(/<[^>]*>/g, '')) }
+    }
     await triggerConfirmation(ctx, pendingJob)
     return
   }
@@ -77,5 +85,10 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
     }
   }
 
-  await ctx.reply(reply, { parse_mode: 'HTML' })
+  try {
+    await ctx.reply(reply, { parse_mode: 'HTML' })
+  } catch {
+    // If HTML parsing fails (e.g. agent outputs bad tags), send as plain text
+    await ctx.reply(reply.replace(/<[^>]*>/g, ''))
+  }
 }
