@@ -4,7 +4,7 @@ import { logger } from '../logger'
 import { createSessionMiddleware, type BotContext } from './middleware/session'
 import { requireSession } from './middleware/guard'
 import { startCommand } from './commands/start'
-import { handleLangId, handleLangEn } from './middleware/language'
+// Language selection removed — Indonesian only
 import { handleCandidateMessage } from './handlers/ask'
 import { handleAdminUpload } from './handlers/admin-upload'
 import {
@@ -30,10 +30,6 @@ bot.use(requireSession)
 bot.command('start', startCommand)
 bot.command('admin', handleAdminLogin)
 bot.command('menu', handleAdminMenu)
-
-// ─── Language selection ───────────────────────────────────────────────────────
-bot.callbackQuery('lang:id', handleLangId)
-bot.callbackQuery('lang:en', handleLangEn)
 
 // ─── Consent callbacks ────────────────────────────────────────────────────────
 bot.callbackQuery('consent:agree', handleConsentAgree)
@@ -83,13 +79,6 @@ bot.on('message:photo', async (ctx) => {
 // ─── Text messages: FSM-routed ────────────────────────────────────────────────
 bot.on('message:text', async (ctx) => {
   const state = ctx.session.fsmState
-
-  if (state === FsmState.LANGUAGE_SELECT) {
-    await ctx.reply(
-      'Silakan pilih bahasa menggunakan tombol di atas.\nPlease select your language using the buttons above.'
-    )
-    return
-  }
 
   if (state === FsmState.DATA_COLLECTION) {
     // If no currentField set, we're in review mode

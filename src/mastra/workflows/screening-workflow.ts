@@ -18,7 +18,7 @@ export interface StepResult {
 // ─── Consent ───────────────────────────────────────────────────────────────
 
 const CONSENT_TEXT: Record<string, string> = {
-  id: `📋 *Persetujuan Data Pribadi (UU PDP)*\n\nUntuk melanjutkan proses lamaran, kami perlu mengumpulkan:\n• Nama lengkap\n• Usia\n• Pendidikan terakhir\n• Nomor telepon\n• Lokasi / domisili\n• Foto KTP\n• Pas foto\n• CV / Daftar Riwayat Hidup\n\n_Tujuan: hanya untuk proses seleksi rekrutmen. Data tidak akan dibagikan ke pihak ketiga._\n\nApakah Anda menyetujui?`,
+  id: `📋 *Persetujuan Pengumpulan Data*\n\nUntuk melanjutkan proses lamaran, kami perlu mengumpulkan:\n• Nama lengkap\n• Usia\n• Pendidikan terakhir\n• Nomor telepon\n• Lokasi / domisili\n• Foto KTP\n• Pas foto\n• CV / Daftar Riwayat Hidup\n\n_Data hanya digunakan untuk proses seleksi rekrutmen._\n\nApakah Anda menyetujui?`,
   en: `📋 *Personal Data Consent (UU PDP)*\n\nTo proceed with your application, we need to collect:\n• Full name\n• Age\n• Education level\n• Phone number\n• Location / domicile\n• KTP photo (ID card)\n• Passport photo\n• CV / Resume\n\n_Purpose: recruitment screening only. Data will not be shared with third parties._\n\nDo you consent?`,
 }
 

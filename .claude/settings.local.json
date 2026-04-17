@@ -1,4 +1,18 @@
 {
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'jq -r \".tool_input.file_path // .tool_input.filePath\" | { read -r f; echo \"$f\" | grep -qE \"\\.env$\" && echo \"{\\\"decision\\\":\\\"block\\\",\\\"reason\\\":\\\"Do not edit .env directly — use .env.example\\\"}\" && exit 2 || exit 0; }'",
+            "statusMessage": "Checking .env protection..."
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "allow": [
       "WebFetch(domain:raw.githubusercontent.com)",

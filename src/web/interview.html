@@ -182,10 +182,19 @@
         dc = pc.createDataChannel('oai-events');
         dc.onmessage = handleEvent;
         dc.onopen = () => {
-          statusEl.textContent = lang === 'id' ? 'Terhubung — silakan berbicara' : 'Connected — speak now';
+          statusEl.textContent = lang === 'id' ? 'Terhubung — AI sedang menyapa...' : 'Connected — AI is greeting...';
           document.getElementById('pulse').classList.add('active');
           timerInterval = setInterval(updateTimer, 1000);
           document.getElementById('transcript').style.display = 'block';
+
+          // Tell AI to speak first — start the interview immediately
+          dc.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['audio', 'text'],
+              instructions: 'Mulai interview sekarang. Sapa kandidat dan tanyakan pertanyaan pertama.'
+            }
+          }));
         };
 
         // 6. SDP offer
@@ -228,6 +237,8 @@
           }
           break;
         case 'response.audio_transcript.done':
+          // Update status after AI finishes first response
+          document.getElementById('status').textContent = 'Interview berlangsung — giliran Anda bicara';
           if (event.transcript?.trim()) {
             transcriptLog.push({ role: 'assistant', text: event.transcript.trim() });
             renderTranscript();

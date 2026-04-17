@@ -2,22 +2,23 @@ import { recruiterAgent } from '../../mastra/agents/recruiter-agent'
 import { logger } from '../../logger'
 import { consumePendingApply } from '../apply-trigger'
 import { triggerConfirmation } from './fsm'
+import { loadBotResponses, matchResponse } from '../../mastra/tools/bot-responses'
 import type { BotContext } from '../middleware/session'
 
-const FALLBACK_ID = 'id'
-const FALLBACK_EN = 'en'
+const APOLOGY = '⚠️ Maaf, saya sedang mengalami gangguan teknis. Tim kami telah diberitahu dan akan segera membantu Anda.'
 
-const APOLOGY: Record<string, string> = {
-  id: '⚠️ Maaf, saya sedang mengalami gangguan teknis. Tim kami telah diberitahu dan akan segera membantu Anda.',
-  en: '⚠️ Sorry, I\'m experiencing a technical issue. Our team has been notified and will assist you shortly.',
-}
-
-// Keywords that indicate the candidate wants to apply
 const APPLY_KEYWORDS = ['daftar', 'apply', 'melamar', 'mendaftar', 'lamar']
 
 function isApplyIntent(text: string): boolean {
-  const lower = text.toLowerCase().trim()
-  return APPLY_KEYWORDS.some((kw) => lower.includes(kw))
+  return APPLY_KEYWORDS.some((kw) => text.toLowerCase().trim().includes(kw))
+}
+
+async function sendReply(ctx: BotContext, reply: string): Promise<void> {
+  try {
+    await ctx.reply(reply, { parse_mode: 'HTML' })
+  } catch {
+    await ctx.reply(reply.replace(/<[^>]*>/g, ''))
+  }
 }
 
 export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
@@ -25,19 +26,33 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   if (!text) return
 
   const chatId = String(ctx.chat!.id)
-  const language = ctx.session.language ?? FALLBACK_ID
+  logger.info({ chat_id: chatId, event: 'candidate_message' })
 
-  logger.info({ chat_id: chatId, event: 'candidate_message', language })
-
-  // If candidate already discussed a job and says "daftar", trigger directly
-  // without waiting for the agent (which often asks follow-up questions instead)
+  // 1. Direct apply shortcut
   if (isApplyIntent(text) && ctx.session.appliedJob) {
     logger.info({ chat_id: chatId, event: 'direct_apply_trigger', job: ctx.session.appliedJob })
     await triggerConfirmation(ctx, ctx.session.appliedJob)
     return
   }
 
-  // Build context: include replied-to message if candidate is replying to a specific bot message
+  // 2. Check bot response templates from Sheets (greeting, thanks, farewell, etc.)
+  const responses = await loadBotResponses()
+  const matched = matchResponse(text, responses)
+
+  if (matched) {
+    logger.info({ chat_id: chatId, event: 'bot_response_matched', category: matched.category })
+
+    // [SHOW_JOBS] / [SEARCH_JOBS] → forward to RAG agent
+    if (matched.response === '[SHOW_JOBS]' || matched.response === '[SEARCH_JOBS]') {
+      // Fall through to agent below
+    } else {
+      // Direct response — no agent needed (fast, cheap)
+      await sendReply(ctx, matched.response)
+      return
+    }
+  }
+
+  // 3. Forward to RAG agent for job queries
   const replyToText = ctx.message?.reply_to_message?.text
   let messageWithContext = `[CHAT_ID:${chatId}]\n`
   if (replyToText) {
@@ -48,35 +63,26 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   let reply: string
   try {
     const result = await recruiterAgent.generate(messageWithContext, {
-      memory: {
-        thread: chatId,
-        resource: chatId,
-      },
+      memory: { thread: chatId, resource: chatId },
     })
     reply = result.text ?? ''
   } catch (err) {
     logger.error({ chat_id: chatId, event: 'agent_error', err })
-    reply = APOLOGY[language] ?? APOLOGY[FALLBACK_EN]
+    reply = APOLOGY
   }
 
-  if (!reply.trim()) {
-    reply = APOLOGY[language] ?? APOLOGY[FALLBACK_EN]
-  }
+  if (!reply.trim()) reply = APOLOGY
 
-  // Check if the agent triggered the application flow via tool
+  // Check if agent triggered application flow
   const pendingJob = consumePendingApply(chatId)
   if (pendingJob !== null) {
     ctx.session.appliedJob = pendingJob
-    if (reply.trim()) {
-      try { await ctx.reply(reply, { parse_mode: 'HTML' }) }
-      catch { await ctx.reply(reply.replace(/<[^>]*>/g, '')) }
-    }
+    if (reply.trim()) await sendReply(ctx, reply)
     await triggerConfirmation(ctx, pendingJob)
     return
   }
 
-  // Extract job title from agent response for future "daftar" shortcut
-  // If agent mentions a specific job, remember it in session
+  // Extract job title for future "daftar" shortcut
   if (!ctx.session.appliedJob && reply) {
     const jobMatch = /<b>([^<]+)<\/b>\s*[—–-]\s*\S+/.exec(reply)
     if (jobMatch?.[1]) {
@@ -85,10 +91,5 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
     }
   }
 
-  try {
-    await ctx.reply(reply, { parse_mode: 'HTML' })
-  } catch {
-    // If HTML parsing fails (e.g. agent outputs bad tags), send as plain text
-    await ctx.reply(reply.replace(/<[^>]*>/g, ''))
-  }
+  await sendReply(ctx, reply)
 }

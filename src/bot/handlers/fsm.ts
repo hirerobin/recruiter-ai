@@ -205,15 +205,21 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
 
     logger.info({ chat_id: id, event: 'file_downloaded', fileStep, path: result.path })
 
-    // Set local path immediately so flow continues
-    if (fileStep === 'ktp') ctx.session.files.ktpPath = result.path
-    else if (fileStep === 'photo') ctx.session.files.photoPath = result.path
-    else ctx.session.files.cvPath = result.path
+    // Upload to Google Drive and use Drive URL for Sheets
+    let filePath = result.path
+    try {
+      const driveResult = await uploadToDrive(id, result.path, fileStep)
+      if (driveResult.success && driveResult.driveUrl) {
+        filePath = driveResult.driveUrl
+        logger.info({ chat_id: id, event: 'drive_uploaded', fileStep, url: filePath })
+      }
+    } catch (err) {
+      logger.error({ chat_id: id, event: 'drive_upload_error', fileStep, err })
+    }
 
-    // Upload to Google Drive (fire-and-forget — don't block the user)
-    uploadToDrive(id, result.path, fileStep).catch((err) =>
-      logger.error({ chat_id: id, event: 'drive_upload_bg_error', err })
-    )
+    if (fileStep === 'ktp') ctx.session.files.ktpPath = filePath
+    else if (fileStep === 'photo') ctx.session.files.photoPath = filePath
+    else ctx.session.files.cvPath = filePath
 
     const confirm = l === 'id' ? `✅ ${fileStep.toUpperCase()} diterima.` : `✅ ${fileStep.toUpperCase()} received.`
     const next = nextFileStep(fileStep)

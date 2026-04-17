@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": [
+        "postgres-mcp",
+        "--database-url",
+        "postgresql://recruiter:recruiter_pass@localhost:5434/recruiter_ai"
+      ]
+    }
+  }
+}
