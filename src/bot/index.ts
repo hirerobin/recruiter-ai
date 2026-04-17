@@ -95,6 +95,7 @@ bot.on('message:text', async (ctx) => {
 export async function startBot(): Promise<void> {
   const { handleCalendlyWebhook } = await import('./handlers/calendly-webhook')
   const { handleRealtimeSession, handleRealtimeComplete, serveInterviewPage } = await import('./handlers/realtime-api')
+  const { handleWebChat } = await import('./handlers/web-chat')
 
   // Shared HTTP request router
   function routeRequest(req: Request, fallback?: (req: Request) => Response | Promise<Response>): Response | Promise<Response> {
@@ -103,6 +104,7 @@ export async function startBot(): Promise<void> {
     if (url.pathname === '/api/realtime/session' && req.method === 'POST') return handleRealtimeSession(req)
     if (url.pathname === '/api/realtime/complete' && req.method === 'POST') return handleRealtimeComplete(req)
     if (url.pathname === '/interview') return serveInterviewPage()
+    if (url.pathname === '/api/web/chat' && req.method === 'POST') return handleWebChat(req)
     return fallback ? fallback(req) : new Response('OK', { status: 200 })
   }
 

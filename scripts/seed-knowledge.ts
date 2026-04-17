@@ -1,13 +1,12 @@
 /**
- * Seeds the job knowledge base into pgvector.
+ * Seeds ALL sheets from GOOGLE_JOBS_SPREADSHEET_ID into pgvector (except Sheet5).
  *
  * Usage:
- *   bun run scripts/seed-knowledge.ts              # reads from Google Sheets (GOOGLE_JOBS_SPREADSHEET_ID)
+ *   bun run scripts/seed-knowledge.ts              # reads all sheets from Google Sheets
  *   bun run scripts/seed-knowledge.ts --csv         # reads from knowledge/jobs.csv (legacy)
  *   bun run scripts/seed-knowledge.ts knowledge/jobs.csv  # reads from specific CSV file
  *
- * Safe to run multiple times — uses deleteFilter to replace existing vectors
- * per job before re-inserting.
+ * Safe to run multiple times — uses deleteFilter to replace existing vectors per entry.
  */
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -16,11 +15,25 @@ import { MDocument } from '@mastra/rag'
 import { openai } from '@ai-sdk/openai'
 import { embed } from 'ai'
 import { google } from 'googleapis'
+import type { sheets_v4 } from 'googleapis'
 import { PgVector } from '@mastra/pg'
 import { env } from '../src/config/env'
 import { INDEX_NAME, EMBEDDING_DIMENSION } from '../src/mastra/rag/knowledge'
 
+const SKIP_SHEETS = ['Sheet5']
+const JOB_LIST_SHEET = 'List Job'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface SeedDocument {
+  sheet_name: string
+  id_key: string
+  text: string
+  metadata: Record<string, string>
+}
+
 interface JobRow {
+  sheet_name: string
   judul_job: string
   lokasi: string
   deskripsi: string
@@ -36,45 +49,50 @@ interface JobRow {
   recruiter_number: string
 }
 
-// ─── Read from Google Sheets ─────────────────────────────────────────────────
+// ─── Google Sheets auth ───────────────────────────────────────────────────────
 
-async function readFromSheets(): Promise<JobRow[]> {
-  const spreadsheetId = env.GOOGLE_JOBS_SPREADSHEET_ID
-  const sheetName = env.GOOGLE_JOBS_SHEET_NAME ?? 'List Job'
-
-  if (!spreadsheetId) {
-    console.error('GOOGLE_JOBS_SPREADSHEET_ID not set in .env')
-    process.exit(1)
-  }
-
+function createSheetsClient(): sheets_v4.Sheets {
   const key = env.GOOGLE_PRIVATE_KEY.split('\\n').join('\n')
   const auth = new google.auth.JWT({
     email: env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
     key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
   })
+  return google.sheets({ version: 'v4', auth })
+}
 
-  const sheets = google.sheets({ version: 'v4', auth })
+// ─── List sheets ──────────────────────────────────────────────────────────────
+
+async function listSheetNames(spreadsheetId: string): Promise<string[]> {
+  const sheets = createSheetsClient()
+  const res = await sheets.spreadsheets.get({ spreadsheetId, fields: 'sheets.properties.title' })
+  return (res.data.sheets ?? [])
+    .map((s) => s.properties?.title ?? '')
+    .filter((name) => name && !SKIP_SHEETS.includes(name))
+}
+
+// ─── Read raw sheet values ────────────────────────────────────────────────────
+
+async function readSheetValues(spreadsheetId: string, sheetName: string): Promise<string[][]> {
+  const sheets = createSheetsClient()
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${sheetName}!A:M`,
+    range: `'${sheetName}'!A:Z`,
   })
+  return (res.data.values ?? []) as string[][]
+}
 
-  const rows = res.data.values ?? []
-  if (rows.length < 2) {
-    console.error('No data rows found in sheet')
-    process.exit(1)
-  }
+// ─── "List Job" — typed mapper ────────────────────────────────────────────────
 
-  // Skip header row, map columns to JobRow
-  // Columns: Judul Job | Lokasi | Deskrpsi | R_client | R_Age | R_SIM | Pendidikan | Role | Gaji | Benefit | (post_test) | R.Nama | R.HP
-  return rows.slice(1).filter(r => r[0]?.trim()).map((r): JobRow => ({
+function mapJobRow(r: string[], sheetName: string): JobRow {
+  return {
+    sheet_name: sheetName,
     judul_job: r[0]?.trim() ?? '',
     lokasi: r[1]?.trim() ?? '',
     deskripsi: r[2]?.trim() ?? '',
     client: r[3]?.trim() ?? '',
     requirement_age: r[4]?.trim() ?? '',
-    requirement_sim: r[5]?.trim() ?? '-',
+    requirement_sim: r[5]?.trim() || '-',
     requirement_pendidikan: r[6]?.trim() ?? '',
     role: r[7]?.trim() ?? '',
     gaji: r[8]?.trim() ?? '',
@@ -82,32 +100,8 @@ async function readFromSheets(): Promise<JobRow[]> {
     post_test: r[10]?.trim() ?? '',
     recruiter_name: r[11]?.trim() ?? '',
     recruiter_number: r[12]?.trim() ?? '',
-  }))
+  }
 }
-
-// ─── Read from CSV (legacy) ──────────────────────────────────────────────────
-
-function readFromCsv(csvPath: string): JobRow[] {
-  const csvContent = readFileSync(csvPath, 'utf8')
-  const raw: Record<string, string>[] = parse(csvContent, { columns: true, skip_empty_lines: true })
-  return raw.map((r): JobRow => ({
-    judul_job: r['judul_job'] ?? '',
-    lokasi: r['lokasi'] ?? '',
-    deskripsi: r['deskripsi'] ?? '',
-    client: r['client'] ?? '',
-    requirement_age: r['requirement.age'] ?? '',
-    requirement_sim: r['requirement.jenis_sim'] ?? '',
-    requirement_pendidikan: r['requirement.pendidikan'] ?? '',
-    role: r['role'] ?? '',
-    gaji: r['benefit'] ?? '',
-    benefit: r['benefit'] ?? '',
-    post_test: r['post_test'] ?? '',
-    recruiter_name: r['recruiter_name'] ?? '',
-    recruiter_number: r['recruitment_number'] ?? '',
-  }))
-}
-
-// ─── Build text for vector embedding ─────────────────────────────────────────
 
 function buildJobText(row: JobRow): string {
   const simText = row.requirement_sim && row.requirement_sim !== '-' ? ` SIM ${row.requirement_sim}.` : ''
@@ -125,28 +119,165 @@ function buildJobText(row: JobRow): string {
   ].join('\n')
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+async function readJobListSheet(spreadsheetId: string, sheetName: string): Promise<SeedDocument[]> {
+  const rows = await readSheetValues(spreadsheetId, sheetName)
+  if (rows.length < 2) return []
 
-async function main() {
-  const args = process.argv.slice(2)
-  const useCsv = args.includes('--csv') || args.some(a => a.endsWith('.csv'))
-  const csvPath = args.find(a => a.endsWith('.csv')) ?? join(import.meta.dir, '..', 'knowledge', 'jobs.csv')
+  return rows
+    .slice(1)
+    .filter((r) => r[0]?.trim())
+    .map((r): SeedDocument => {
+      const row = mapJobRow(r, sheetName)
+      return {
+        sheet_name: sheetName,
+        id_key: `${row.judul_job}::${row.lokasi}`,
+        text: buildJobText(row),
+        metadata: {
+          sheet_name: sheetName,
+          judul_job: row.judul_job,
+          lokasi: row.lokasi,
+          client: row.client,
+          role: row.role,
+          recruiter_name: row.recruiter_name,
+          recruitment_number: row.recruiter_number,
+        },
+      }
+    })
+}
 
-  let jobs: JobRow[]
-  if (useCsv) {
-    console.log(`Reading jobs from CSV: ${csvPath}`)
-    jobs = readFromCsv(csvPath)
-  } else {
-    console.log(`Reading jobs from Google Sheets: ${env.GOOGLE_JOBS_SPREADSHEET_ID}`)
-    jobs = await readFromSheets()
+// ─── Generic sheets — header-based mapper ─────────────────────────────────────
+
+async function readGenericSheet(spreadsheetId: string, sheetName: string): Promise<SeedDocument[]> {
+  const rows = await readSheetValues(spreadsheetId, sheetName)
+  if (rows.length < 2) {
+    console.log(`  Skipping '${sheetName}' — empty or no data rows`)
+    return []
   }
 
-  if (jobs.length === 0) {
-    console.error('No jobs found')
+  const headers = rows[0].map((h) => h?.trim() ?? '')
+  if (headers.every((h) => !h)) {
+    console.log(`  Skipping '${sheetName}' — no headers`)
+    return []
+  }
+
+  return rows
+    .slice(1)
+    .filter((r) => r.some((cell) => cell?.trim()))
+    .map((r, i): SeedDocument => {
+      const pairs = headers
+        .map((h, idx) => ({ h, v: r[idx]?.trim() ?? '' }))
+        .filter(({ h, v }) => h && v)
+
+      const text = [`Sheet: ${sheetName}`, ...pairs.map(({ h, v }) => `${h}: ${v}`)].join('\n')
+
+      const metadata: Record<string, string> = { sheet_name: sheetName }
+      pairs.forEach(({ h, v }) => { metadata[h.toLowerCase().replace(/\s+/g, '_')] = v })
+
+      const firstVal = r[0]?.trim() ?? String(i + 1)
+      return {
+        sheet_name: sheetName,
+        id_key: `${sheetName}::${firstVal}::${i}`,
+        text,
+        metadata,
+      }
+    })
+}
+
+// ─── Read from CSV (legacy) ──────────────────────────────────────────────────
+
+function readFromCsv(csvPath: string): SeedDocument[] {
+  const csvContent = readFileSync(csvPath, 'utf8')
+  const raw: Record<string, string>[] = parse(csvContent, { columns: true, skip_empty_lines: true })
+  return raw.map((r, i): SeedDocument => {
+    const row = mapJobRow(Object.values(r), 'csv')
+    return {
+      sheet_name: 'csv',
+      id_key: `${row.judul_job}::${row.lokasi}`,
+      text: buildJobText(row),
+      metadata: {
+        sheet_name: 'csv',
+        judul_job: row.judul_job,
+        lokasi: row.lokasi,
+        client: row.client,
+        role: row.role,
+        recruiter_name: row.recruiter_name,
+        recruitment_number: row.recruiter_number,
+      },
+    }
+  })
+}
+
+// ─── Read all sheets ──────────────────────────────────────────────────────────
+
+async function readAllSheets(): Promise<SeedDocument[]> {
+  const spreadsheetId = env.GOOGLE_JOBS_SPREADSHEET_ID
+  if (!spreadsheetId) {
+    console.error('GOOGLE_JOBS_SPREADSHEET_ID not set in .env')
     process.exit(1)
   }
 
-  console.log(`Seeding ${jobs.length} job(s)...`)
+  const sheetNames = await listSheetNames(spreadsheetId)
+  console.log(`Found ${sheetNames.length} sheet(s) to seed: ${sheetNames.join(', ')}\n`)
+
+  const all: SeedDocument[] = []
+  for (const name of sheetNames) {
+    const docs = name === JOB_LIST_SHEET
+      ? await readJobListSheet(spreadsheetId, name)
+      : await readGenericSheet(spreadsheetId, name)
+    console.log(`  '${name}' → ${docs.length} document(s)`)
+    all.push(...docs)
+  }
+  return all
+}
+
+// ─── Embed & upsert ───────────────────────────────────────────────────────────
+
+async function upsertDocument(
+  pgVector: PgVector,
+  embeddingModel: ReturnType<typeof openai.embedding>,
+  doc: SeedDocument,
+): Promise<number> {
+  const mdoc = MDocument.fromText(doc.text, doc.metadata)
+  await mdoc.chunkRecursive({ maxSize: 1000, overlap: 100 })
+  const chunks = await mdoc.chunk()
+
+  for (const chunk of chunks) {
+    const { embedding } = await embed({ model: embeddingModel, value: chunk.text })
+    await pgVector.upsert({
+      indexName: INDEX_NAME,
+      vectors: [embedding],
+      metadata: [{ ...chunk.metadata, text: chunk.text }],
+      deleteFilter: {
+        sheet_name: { $eq: doc.sheet_name },
+        id_key: { $eq: doc.id_key },
+      },
+    })
+  }
+  return chunks.length
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2)
+  const useCsv = args.includes('--csv') || args.some((a) => a.endsWith('.csv'))
+  const csvPath = args.find((a) => a.endsWith('.csv')) ?? join(import.meta.dir, '..', 'knowledge', 'jobs.csv')
+
+  let docs: SeedDocument[]
+  if (useCsv) {
+    console.log(`Reading from CSV: ${csvPath}`)
+    docs = readFromCsv(csvPath)
+  } else {
+    console.log(`Spreadsheet: ${env.GOOGLE_JOBS_SPREADSHEET_ID}`)
+    docs = await readAllSheets()
+  }
+
+  if (docs.length === 0) {
+    console.error('No documents found')
+    process.exit(1)
+  }
+
+  console.log(`\nSeeding ${docs.length} total document(s) into '${INDEX_NAME}'...\n`)
 
   const pgVector = new PgVector({ id: 'seed-vector', connectionString: env.DATABASE_URL })
   const indexes = await pgVector.listIndexes()
@@ -158,38 +289,17 @@ async function main() {
   const embeddingModel = openai.embedding('text-embedding-3-small')
   let indexed = 0
 
-  for (const row of jobs) {
-    const text = buildJobText(row)
-    const doc = MDocument.fromText(text, {
-      judul_job: row.judul_job,
-      lokasi: row.lokasi,
-      client: row.client,
-      role: row.role,
-      recruiter_name: row.recruiter_name,
-      recruitment_number: row.recruiter_number,
-    })
-    await doc.chunkRecursive({ maxSize: 1000, overlap: 100 })
-    const chunks = await doc.chunk()
-
-    for (const chunk of chunks) {
-      const { embedding } = await embed({ model: embeddingModel, value: chunk.text })
-      await pgVector.upsert({
-        indexName: INDEX_NAME,
-        vectors: [embedding],
-        metadata: [{ ...chunk.metadata, text: chunk.text }],
-        deleteFilter: { judul_job: { $eq: row.judul_job }, lokasi: { $eq: row.lokasi } },
-      })
-    }
-
+  for (const doc of docs) {
+    const chunks = await upsertDocument(pgVector, embeddingModel, doc)
     indexed++
-    console.log(`  [${indexed}/${jobs.length}] ${row.judul_job} — ${row.lokasi}`)
+    console.log(`  [${indexed}/${docs.length}] [${doc.sheet_name}] ${doc.id_key} (${chunks} chunk(s))`)
   }
 
-  console.log(`\nDone — ${indexed} job(s) indexed into '${INDEX_NAME}'`)
+  console.log(`\nDone — ${indexed} document(s) indexed from ${[...new Set(docs.map((d) => d.sheet_name))].length} sheet(s)`)
   process.exit(0)
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error('Seed failed:', err)
   process.exit(1)
 })

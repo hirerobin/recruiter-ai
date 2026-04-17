@@ -11,7 +11,7 @@ const SHEET_COLUMNS = [
   'ktp_path', 'photo_path', 'cv_path', 'updated_at',
 ]
 
-const HEADER_ROW = [...SHEET_COLUMNS, 'final_status', 'interview_date', 'ai_interview_notes']
+const HEADER_ROW = [...SHEET_COLUMNS, 'final_status', 'interview_date', 'ai_interview_notes', 'interview_score']
 
 function parsePemKey(raw: string): string {
   // Bun reads .env literally — \n stays as two chars (backslash + n).
@@ -112,6 +112,7 @@ async function upsertRow(row: PartialSheetsRow, retries = 3): Promise<void> {
 export interface ExtraColumns {
   interviewDate?: string
   aiInterviewNotes?: string
+  interviewScore?: string
 }
 
 /** Direct service call — fire-and-forget safe */
@@ -125,25 +126,26 @@ export async function writeToSheets(row: PartialSheetsRow, extra?: ExtraColumns)
 
   // Write extra columns (after final_status) if provided
   // Column layout: O=final_status, P=interview_date, Q=ai_interview_notes
-  if (extra?.interviewDate || extra?.aiInterviewNotes) {
+  if (extra?.interviewDate || extra?.aiInterviewNotes || extra?.interviewScore) {
     const auth = getAuth()
     const sheets = google.sheets({ version: 'v4', auth })
     const existingRow = await findRowByChatId(sheets, row.chat_id)
     if (existingRow) {
-      // Read existing P:Q to preserve values we're not updating
+      // Columns: O=final_status, P=interview_date, Q=ai_interview_notes, R=interview_score
       const existing = await sheets.spreadsheets.values.get({
         spreadsheetId,
-        range: `${sheetName}!P${existingRow}:Q${existingRow}`,
+        range: `${sheetName}!P${existingRow}:R${existingRow}`,
       })
-      const current = existing.data.values?.[0] ?? ['', '']
+      const current = existing.data.values?.[0] ?? ['', '', '']
       const newDate = extra.interviewDate ?? current[0] ?? ''
       const newNotes = extra.aiInterviewNotes ?? current[1] ?? ''
+      const newScore = extra.interviewScore ?? current[2] ?? ''
 
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `${sheetName}!P${existingRow}`,
         valueInputOption: 'RAW',
-        requestBody: { values: [[newDate, newNotes]] },
+        requestBody: { values: [[newDate, newNotes, newScore]] },
       })
     }
   }

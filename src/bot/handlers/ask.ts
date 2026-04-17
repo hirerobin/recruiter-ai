@@ -1,4 +1,4 @@
-import { recruiterAgent } from '../../mastra/agents/recruiter-agent'
+import { mastra } from '../../mastra/index'
 import { logger } from '../../logger'
 import { consumePendingApply } from '../apply-trigger'
 import { triggerConfirmation } from './fsm'
@@ -62,7 +62,8 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
 
   let reply: string
   try {
-    const result = await recruiterAgent.generate(messageWithContext, {
+    const agent = mastra.getAgent('recruiterAgent')
+    const result = await agent.generate(messageWithContext, {
       memory: { thread: chatId, resource: chatId },
     })
     reply = result.text ?? ''

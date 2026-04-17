@@ -5,12 +5,13 @@ services:
       POSTGRES_USER: recruiter
       POSTGRES_PASSWORD: recruiter_pass
       POSTGRES_DB: recruiter_ai
+      POSTGRES_HOST_AUTH_METHOD: md5
+      POSTGRES_INITDB_ARGS: --auth-host=md5 --auth-local=trust
     ports:
       - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./scripts/pg_hba.conf:/var/lib/postgresql/pg_hba.conf:ro
-    command: ["postgres", "-c", "hba_file=/var/lib/postgresql/pg_hba.conf", "-c", "password_encryption=md5"]
+    command: ["postgres", "-c", "password_encryption=md5"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U recruiter -d recruiter_ai"]
       interval: 5s

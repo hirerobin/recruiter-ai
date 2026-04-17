@@ -11,6 +11,7 @@ import { google } from 'googleapis'
 import { env } from '../../config/env'
 import { writeToSheets } from '../../mastra/tools/sheets-tool'
 import { uploadToDrive } from '../../mastra/tools/drive-upload'
+import { scoreInterviewTranscript } from '../../mastra/tools/interview-scoring-tool'
 import { logger } from '../../logger'
 import { bot } from '../index'
 
@@ -346,15 +347,52 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
     logger.error({ event: 'realtime_sheets_error', chat_id, err })
   }
 
-  // Notify candidate on Telegram
+  // ── Interview scoring ────────────────────────────────────────────────────────
+  let interviewScore: Awaited<ReturnType<typeof scoreInterviewTranscript>> | null = null
   try {
-    const msg = `✅ *AI Interview selesai!*\n\n⏱ Durasi: ${durationMin} menit\n💬 ${transcript.length} pertanyaan & jawaban\n\nTerima kasih, ${name || 'kandidat'}! Recruiter akan menghubungi Anda.`
+    interviewScore = await scoreInterviewTranscript(transcript)
+    logger.info({ event: 'interview_scored', chat_id, score: interviewScore.totalScore, passed: interviewScore.passed })
+
+    await writeToSheets(
+      { chat_id, status: interviewScore.passed ? 'qualified' : 'rejected' },
+      { aiInterviewNotes: notesWithAudio, interviewScore: String(interviewScore.totalScore) },
+    )
+  } catch (err) {
+    logger.error({ event: 'interview_scoring_error', chat_id, err })
+  }
+
+  // ── Notify candidate ─────────────────────────────────────────────────────────
+  try {
+    let msg = `✅ *AI Interview selesai!*\n\n⏱ Durasi: ${durationMin} menit\n💬 ${transcript.length} pertanyaan & jawaban\n\nTerima kasih, ${name || 'kandidat'}!`
+
+    if (interviewScore) {
+      const scoreEmoji = interviewScore.passed ? '🎉' : '😔'
+      msg += `\n\n${scoreEmoji} *Hasil Interview: ${interviewScore.totalScore}/100*\n`
+
+      for (const b of interviewScore.breakdown) {
+        const icon = b.passed ? '✅' : '❌'
+        msg += `${icon} ${b.question} — *${b.aiScore}/100*\n`
+      }
+
+      msg += interviewScore.passed
+        ? '\n🎊 Selamat! Anda lulus tahap AI Interview. Recruiter akan menghubungi Anda.'
+        : '\n⚠️ Belum lulus tahap AI Interview. Jangan menyerah, terus tingkatkan kemampuan Anda!'
+    } else {
+      msg += '\n\nRecruiter akan menghubungi Anda.'
+    }
+
     await bot.api.sendMessage(chat_id, msg, { parse_mode: 'Markdown' })
   } catch (err) {
     logger.error({ event: 'realtime_notify_error', chat_id, err })
   }
 
-  return Response.json({ success: true, summary, audioDriveUrl })
+  return Response.json({
+    success: true,
+    summary,
+    audioDriveUrl,
+    score: interviewScore?.totalScore ?? null,
+    passed: interviewScore?.passed ?? null,
+  })
 }
 
 // GET /interview — serve Mini App HTML
