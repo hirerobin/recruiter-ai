@@ -46,6 +46,19 @@ function parseApplyByNumber(text: string): number | null {
   return n > 0 && n <= 20 ? n : null
 }
 
+/** Detect bare "daftar" / "lamar" / "apply" with no number */
+function isApplyIntent(text: string): boolean {
+  return /^(?:daftar|lamar|apply|mendaftar|melamar)\s*$/i.test(text.trim())
+}
+
+/** Detect standalone number like "1", "2" … used to select a job from the list */
+function parseSelectNumber(text: string): number | null {
+  const match = /^(\d+)$/.exec(text.trim())
+  if (!match) return null
+  const n = parseInt(match[1]!, 10)
+  return n > 0 && n <= 20 ? n : null
+}
+
 export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   const text = ctx.message?.text
   if (!text) return
@@ -53,10 +66,11 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   const chatId = String(ctx.chat!.id)
   logger.info({ chat_id: chatId, event: 'candidate_message' })
 
-  // 1. Direct "daftar N" shortcut — use lastShownJobs from session
+  const jobs = ctx.session.lastShownJobs ?? []
+
+  // 1a. "daftar N" / "lamar N" — apply directly by list number
   const applyNumber = parseApplyByNumber(text)
   if (applyNumber !== null) {
-    const jobs = ctx.session.lastShownJobs ?? []
     if (jobs.length === 0) {
       await sendReply(ctx, 'Belum ada daftar lowongan yang ditampilkan. Ketik <b>ada lowongan</b> untuk lihat daftar lowongan tersedia. 😊')
       return
@@ -72,6 +86,38 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
     await sendReply(ctx, `Baik, proses pendaftaran untuk <b>${picked.title}</b> — ${picked.location} dimulai ya. 🎉`)
     await triggerConfirmation(ctx, picked.title)
     return
+  }
+
+  // 1b. Bare "daftar" / "lamar" — apply directly when only 1 job is in context
+  if (isApplyIntent(text)) {
+    if (jobs.length === 1) {
+      const picked = jobs[0]!
+      logger.info({ chat_id: chatId, event: 'apply_direct', job: picked.title })
+      ctx.session.appliedJob = picked.title
+      await sendReply(ctx, `Baik, proses pendaftaran untuk <b>${picked.title}</b> — ${picked.location} dimulai ya. 🎉`)
+      await triggerConfirmation(ctx, picked.title)
+      return
+    }
+    if (jobs.length === 0) {
+      await sendReply(ctx, 'Anda ingin melamar posisi apa? Ketik <b>ada lowongan</b> untuk lihat daftar lowongan tersedia. 😊')
+      return
+    }
+    // Multiple jobs — ask which one bot-side (no agent round-trip)
+    const list = jobs.map((j, i) => `  ${i + 1}. <b>${j.title}</b> — ${j.location}`).join('\n')
+    await sendReply(ctx, `Posisi mana yang ingin Anda lamar?\n\n${list}\n\nBalas dengan <b>nomor</b> atau ketik <b>daftar [nomor]</b>. 😊`)
+    return
+  }
+
+  // 1c. Standalone number — user is selecting a job from the list
+  const selectNumber = parseSelectNumber(text)
+  if (selectNumber !== null && jobs.length > 0) {
+    const idx = selectNumber - 1
+    if (idx < jobs.length) {
+      // Narrow lastShownJobs to this one entry so a follow-up "daftar" applies directly
+      ctx.session.lastShownJobs = [jobs[idx]!]
+      logger.info({ chat_id: chatId, event: 'job_selected', number: selectNumber, job: jobs[idx]!.title })
+    }
+    // Fall through to agent so it shows the job detail as normal
   }
 
   // 2. Check bot response templates from Sheets (greeting, thanks, farewell, etc.)
