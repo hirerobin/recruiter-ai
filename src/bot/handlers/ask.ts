@@ -67,6 +67,15 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   logger.info({ chat_id: chatId, event: 'candidate_message' })
 
   const jobs = ctx.session.lastShownJobs ?? []
+  const pending = ctx.session.pendingApplyJob
+
+  // Helper: directly apply a job
+  const applyJob = async (job: { title: string; location: string }) => {
+    ctx.session.appliedJob = job.title
+    ctx.session.pendingApplyJob = null
+    await sendReply(ctx, `Baik, proses pendaftaran untuk <b>${job.title}</b> — ${job.location} dimulai ya. 🎉`)
+    await triggerConfirmation(ctx, job.title)
+  }
 
   // 1a. "daftar N" / "lamar N" — apply directly by list number
   const applyNumber = parseApplyByNumber(text)
@@ -80,22 +89,22 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
       await sendReply(ctx, `Maaf, nomor ${applyNumber} tidak ada di daftar. Hanya ada ${jobs.length} lowongan — silakan pilih antara 1-${jobs.length}.`)
       return
     }
-    const picked = jobs[idx]!
-    logger.info({ chat_id: chatId, event: 'apply_by_number', number: applyNumber, job: picked.title })
-    ctx.session.appliedJob = picked.title
-    await sendReply(ctx, `Baik, proses pendaftaran untuk <b>${picked.title}</b> — ${picked.location} dimulai ya. 🎉`)
-    await triggerConfirmation(ctx, picked.title)
+    logger.info({ chat_id: chatId, event: 'apply_by_number', number: applyNumber, job: jobs[idx]!.title })
+    await applyJob(jobs[idx]!)
     return
   }
 
-  // 1b. Bare "daftar" / "lamar" — apply directly when only 1 job is in context
+  // 1b. Confirm intent ("daftar", "ya", "oke", etc.)
   if (isApplyIntent(text)) {
+    // If candidate is on a detail view — apply immediately
+    if (pending) {
+      logger.info({ chat_id: chatId, event: 'apply_from_pending', job: pending.title })
+      await applyJob(pending)
+      return
+    }
     if (jobs.length === 1) {
-      const picked = jobs[0]!
-      logger.info({ chat_id: chatId, event: 'apply_direct', job: picked.title })
-      ctx.session.appliedJob = picked.title
-      await sendReply(ctx, `Baik, proses pendaftaran untuk <b>${picked.title}</b> — ${picked.location} dimulai ya. 🎉`)
-      await triggerConfirmation(ctx, picked.title)
+      logger.info({ chat_id: chatId, event: 'apply_direct', job: jobs[0]!.title })
+      await applyJob(jobs[0]!)
       return
     }
     if (jobs.length === 0) {
@@ -108,25 +117,28 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
     return
   }
 
-  // 1c. Standalone number — select a job from the list
+  // 1c. Standalone number — select or confirm a job
   const selectNumber = parseSelectNumber(text)
   if (selectNumber !== null && jobs.length > 0) {
     const idx = selectNumber - 1
     if (idx < jobs.length) {
-      if (jobs.length === 1) {
-        // Only 1 job in context — number confirms/applies directly (same as "daftar")
-        const picked = jobs[0]!
-        logger.info({ chat_id: chatId, event: 'apply_confirm_number', job: picked.title })
-        ctx.session.appliedJob = picked.title
-        await sendReply(ctx, `Baik, proses pendaftaran untuk <b>${picked.title}</b> — ${picked.location} dimulai ya. 🎉`)
-        await triggerConfirmation(ctx, picked.title)
+      if (pending) {
+        // Already in detail view — any number is a confirm/apply
+        logger.info({ chat_id: chatId, event: 'apply_confirm_number', job: pending.title })
+        await applyJob(pending)
         return
       }
-      // Multiple jobs — narrow to this selection, fall through to agent for detail
-      ctx.session.lastShownJobs = [jobs[idx]!]
+      if (jobs.length === 1) {
+        // Single job in context — confirm apply
+        logger.info({ chat_id: chatId, event: 'apply_confirm_number', job: jobs[0]!.title })
+        await applyJob(jobs[0]!)
+        return
+      }
+      // Multiple jobs — set pendingApplyJob so next message applies directly
+      ctx.session.pendingApplyJob = jobs[idx]!
       logger.info({ chat_id: chatId, event: 'job_selected', number: selectNumber, job: jobs[idx]!.title })
     }
-    // Fall through to agent so it shows the job detail
+    // Fall through to agent to show job detail
   }
 
   // 2. Check bot response templates from Sheets (greeting, thanks, farewell, etc.)
@@ -175,6 +187,7 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
   const parsedJobs = parseJobsFromReply(reply)
   if (parsedJobs.length > 0) {
     ctx.session.lastShownJobs = parsedJobs
+    ctx.session.pendingApplyJob = null  // new list shown — clear any prior selection
     logger.info({ chat_id: chatId, event: 'jobs_tracked', count: parsedJobs.length })
   }
 

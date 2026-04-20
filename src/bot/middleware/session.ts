@@ -17,6 +17,7 @@ export interface SessionData {
   files: FileUploads
   isAdmin: boolean
   lastShownJobs: JobListing[]  // Tracks jobs shown in last agent response (for "daftar N")
+  pendingApplyJob: JobListing | null  // Job the candidate is currently viewing detail for
   // Dynamic data collection (from SPX Question sheet)
   currentQuestionIndex: number                          // 0-based index into data needs list
   answers: Record<string, string>                       // question_number → answer
@@ -46,6 +47,7 @@ export function createSessionMiddleware(storage?: StorageAdapter<SessionData>) {
       lastActivityAt: null,
       idlePromptSentAt: null,
       devSheetsId: null,
+      pendingApplyJob: null,
     }),
     ...(storage ? { storage } : {}),
   })
