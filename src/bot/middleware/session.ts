@@ -23,6 +23,8 @@ export interface SessionData {
   // Idle detection
   lastActivityAt: string | null                         // ISO timestamp of last user message
   idlePromptSentAt: string | null                       // When the idle "still there?" prompt was sent
+  // Dev mode: unique Sheets key per application attempt (chatId_timestamp)
+  devSheetsId: string | null
 }
 
 export type BotContext = Context & SessionFlavor<SessionData>
@@ -43,6 +45,7 @@ export function createSessionMiddleware(storage?: StorageAdapter<SessionData>) {
       answers: {},
       lastActivityAt: null,
       idlePromptSentAt: null,
+      devSheetsId: null,
     }),
     ...(storage ? { storage } : {}),
   })

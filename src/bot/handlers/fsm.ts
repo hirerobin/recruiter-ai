@@ -30,6 +30,9 @@ import { logger } from '../../logger'
 const lang = (ctx: BotContext) => ctx.session.language ?? 'id'
 const chatId = (ctx: BotContext) => String(ctx.chat!.id)
 
+/** In dev, returns chatId_timestamp so every new application creates a fresh Sheets row */
+const getSheetsId = (ctx: BotContext) => ctx.session.devSheetsId ?? chatId(ctx)
+
 // ─── File naming helpers ───────────────────────────────────────────────────────
 
 const SLUG_STOP_WORDS = new Set([
@@ -96,6 +99,10 @@ export async function handleConsentAgree(ctx: BotContext): Promise<void> {
   ctx.session.currentQuestionIndex = 0
   ctx.session.answers = {}
   ctx.session.currentField = null
+  // Dev: stamp a unique Sheets key so every test run creates a new row
+  ctx.session.devSheetsId = env.NODE_ENV !== 'production'
+    ? `${chatId(ctx)}_${Date.now()}`
+    : null
   await ctx.answerCallbackQuery()
 
   const questions = await loadDataNeeds()
@@ -167,7 +174,7 @@ export async function handleDataCollection(ctx: BotContext): Promise<void> {
 
   // Fire-and-forget Sheets partial save
   writeToSheets({
-    chat_id: id,
+    chat_id: getSheetsId(ctx),
     [q.questionNumber]: parsed ?? text.trim(),
     status: 'partial',
   }).catch((err) => logger.error({ chat_id: id, event: 'sheets_partial_save_error', err }))
@@ -256,7 +263,7 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
 
     // Save answer as file URL
     ctx.session.answers[q.questionNumber] = filePath
-    writeToSheets({ chat_id: id, [q.questionNumber]: filePath, status: 'partial' })
+    writeToSheets({ chat_id: getSheetsId(ctx), [q.questionNumber]: filePath, status: 'partial' })
       .catch((err) => logger.error({ chat_id: id, event: 'sheets_partial_save_error', err }))
 
     await ctx.reply(`✅ File diterima.`)
@@ -335,7 +342,7 @@ async function runScoring(ctx: BotContext): Promise<void> {
     ctx.session.fsmState = passed ? FsmState.PASS : FsmState.FAIL
 
     writeToSheets({
-      chat_id: id,
+      chat_id: getSheetsId(ctx),
       name: nameAnswer,
       age: String(age),
       education: educationAnswer,
@@ -376,7 +383,7 @@ async function runScoring(ctx: BotContext): Promise<void> {
   // ── AI Voice Interview (Mini App) ───────────────────────────────────────────
   if (passed && env.PUBLIC_URL) {
     const interviewParams = new URLSearchParams({
-      chat_id: id,
+      chat_id: getSheetsId(ctx),
       job: ctx.session.appliedJob ?? '',
       name: candidateName,
       lang: l,
