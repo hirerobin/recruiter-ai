@@ -33,6 +33,7 @@ export interface AnswerScore {
   question: string
   candidateAnswer: string
   aiScore: number        // 0–100 raw AI score
+  analysis: string       // AI reasoning for the score
   passed: boolean
   contribution: number   // (aiScore / 100) * weight * 100 → points toward final
 }
@@ -120,19 +121,21 @@ const answerScoreSchema = z.object({
     questionId: z.string(),
     candidateAnswer: z.string().describe('The exact answer the candidate gave, extracted from transcript. Empty string if not answered.'),
     score: z.number().min(0).max(100).describe('How well the answer matches the expected answer. 0 = completely wrong/not answered, 100 = perfect match.'),
+    analysis: z.string().describe('1–2 sentence explanation of why this score was given. In Indonesian. Mention what the candidate said and how it compares to the expected answer.'),
   })),
 })
 
 async function scoreWithAI(
   transcript: string,
   rubric: ScoringRubricItem[],
-): Promise<Map<string, { candidateAnswer: string; score: number }>> {
+): Promise<Map<string, { candidateAnswer: string; score: number; analysis: string }>> {
   const questionList = rubric.map((r) =>
     `- ID: ${r.questionId}\n  Pertanyaan: "${r.question}"\n  Jawaban yang diharapkan: "${r.expectedAnswer}"`
   ).join('\n\n')
 
   const { object } = await generateObject({
     model: openai('gpt-4o'),
+    output: 'object',
     schema: answerScoreSchema,
     prompt: `Kamu adalah evaluator interview yang objektif. Analisis transkrip interview berikut dan nilai jawaban kandidat untuk setiap pertanyaan yang ditentukan.
 
@@ -148,12 +151,13 @@ INSTRUKSI PENILAIAN:
 - 0 = tidak menjawab atau salah total
 - 50–70 = menjawab sebagian / kurang lengkap
 - 80–100 = menjawab dengan baik sesuai ekspektasi
-- Jika pertanyaan tidak ditanyakan dalam interview, beri nilai 0 dan candidateAnswer = ""`,
+- Jika pertanyaan tidak ditanyakan dalam interview, beri nilai 0, candidateAnswer = "", analysis = "Pertanyaan tidak terjawab dalam sesi interview."
+- Untuk setiap pertanyaan, tulis analisis singkat (1–2 kalimat) dalam Bahasa Indonesia yang menjelaskan kenapa skor tersebut diberikan`,
   })
 
-  const result = new Map<string, { candidateAnswer: string; score: number }>()
+  const result = new Map<string, { candidateAnswer: string; score: number; analysis: string }>()
   for (const item of object.items) {
-    result.set(item.questionId, { candidateAnswer: item.candidateAnswer, score: item.score })
+    result.set(item.questionId, { candidateAnswer: item.candidateAnswer, score: item.score, analysis: item.analysis })
   }
   return result
 }
@@ -175,6 +179,7 @@ export async function scoreInterviewTranscript(
     const scored = aiScores.get(item.questionId)
     const aiScore = scored?.score ?? 0
     const candidateAnswer = scored?.candidateAnswer ?? ''
+    const analysis = scored?.analysis ?? ''
     const contribution = (aiScore / 100) * item.weight * 100
 
     breakdown.push({
@@ -182,6 +187,7 @@ export async function scoreInterviewTranscript(
       question: item.question,
       candidateAnswer,
       aiScore,
+      analysis,
       passed: aiScore >= item.passingThreshold * 100,
       contribution: Math.round(contribution * 10) / 10,
     })
@@ -194,4 +200,23 @@ export async function scoreInterviewTranscript(
     passed: totalScore >= 60,
     breakdown,
   }
+}
+
+// ─── Detail formatter (for Sheets column) ────────────────────────────────────
+
+export function formatScoreDetail(result: InterviewScoreResult): string {
+  const header = `Hasil AI Interview: ${result.totalScore}/100 | ${result.passed ? 'LULUS ✅' : 'TIDAK LULUS ❌'}\n\n`
+
+  const rows = result.breakdown.map((b) => {
+    const icon = b.passed ? '✅' : '❌'
+    const score = `${b.aiScore}/100 (kontribusi: ${b.contribution})`
+    const answer = b.candidateAnswer ? `Jawaban: "${b.candidateAnswer}"` : 'Jawaban: (tidak terjawab)'
+    return [
+      `${icon} ${b.question} — ${score}`,
+      answer,
+      `Analisis: ${b.analysis}`,
+    ].join('\n')
+  })
+
+  return header + rows.join('\n\n')
 }

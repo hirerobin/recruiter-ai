@@ -9,7 +9,7 @@ import type { PartialSheetsRow } from '../../types/sheets'
 // Core tracking columns (always present)
 const CORE_COLUMNS = [
   'chat_id', 'applied_job', 'status', 'score', 'fail_reason',
-  'final_status', 'interview_date', 'interview_score', 'ai_interview_notes', 'updated_at',
+  'final_status', 'interview_date', 'interview_score', 'ai_interview_notes', 'interview_score_detail', 'updated_at',
 ]
 
 function parsePemKey(raw: string): string {
@@ -146,6 +146,7 @@ export interface ExtraColumns {
   interviewDate?: string
   aiInterviewNotes?: string
   interviewScore?: string
+  interviewScoreDetail?: string
 }
 
 /** Direct service call — fire-and-forget safe */
@@ -163,6 +164,7 @@ export async function writeToSheets(row: PartialSheetsRow, extra?: ExtraColumns)
   if (extra?.interviewDate) merged.interview_date = extra.interviewDate
   if (extra?.aiInterviewNotes) merged.ai_interview_notes = extra.aiInterviewNotes
   if (extra?.interviewScore) merged.interview_score = extra.interviewScore
+  if (extra?.interviewScoreDetail) merged.interview_score_detail = extra.interviewScoreDetail
 
   await upsertRow(merged)
 }

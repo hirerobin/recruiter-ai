@@ -11,7 +11,7 @@ import { google } from 'googleapis'
 import { env } from '../../config/env'
 import { writeToSheets } from '../../mastra/tools/sheets-tool'
 import { uploadToDrive } from '../../mastra/tools/drive-upload'
-import { scoreInterviewTranscript } from '../../mastra/tools/interview-scoring-tool'
+import { scoreInterviewTranscript, formatScoreDetail } from '../../mastra/tools/interview-scoring-tool'
 import { loadDataNeeds } from '../../mastra/tools/data-needs'
 import { pool } from '../../db/client'
 import { logger } from '../../logger'
@@ -403,7 +403,11 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
 
     await writeToSheets(
       { chat_id, status: interviewScore.passed ? 'qualified' : 'rejected' },
-      { aiInterviewNotes: notesWithAudio, interviewScore: String(interviewScore.totalScore) },
+      {
+        aiInterviewNotes: notesWithAudio,
+        interviewScore: String(interviewScore.totalScore),
+        interviewScoreDetail: formatScoreDetail(interviewScore),
+      },
     )
   } catch (err) {
     logger.error({ event: 'interview_scoring_error', chat_id, err })
