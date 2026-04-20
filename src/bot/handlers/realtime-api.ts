@@ -12,7 +12,32 @@ import { env } from '../../config/env'
 import { writeToSheets } from '../../mastra/tools/sheets-tool'
 import { uploadToDrive } from '../../mastra/tools/drive-upload'
 import { scoreInterviewTranscript } from '../../mastra/tools/interview-scoring-tool'
+import { loadDataNeeds } from '../../mastra/tools/data-needs'
+import { pool } from '../../db/client'
 import { logger } from '../../logger'
+
+/** Load collected Data_Needs answers from session storage, mapped by question text */
+async function loadCollectedAnswers(chatId: string): Promise<Record<string, string>> {
+  try {
+    const res = await pool.query('SELECT data FROM bot_sessions WHERE key = $1', [chatId])
+    const raw = res.rows[0]?.data as { answers?: Record<string, string> } | undefined
+    const answers = raw?.answers ?? {}
+    if (Object.keys(answers).length === 0) return {}
+
+    // Map question_number → question text
+    const questions = await loadDataNeeds()
+    const result: Record<string, string> = {}
+    for (const q of questions) {
+      if (answers[q.questionNumber]) {
+        result[q.question] = answers[q.questionNumber]!
+      }
+    }
+    return result
+  } catch (err) {
+    logger.error({ event: 'load_collected_answers_error', chatId, err })
+    return {}
+  }
+}
 import { bot } from '../index'
 
 const INTERVIEW_HTML = readFileSync(join(import.meta.dir, '..', '..', 'web', 'interview.html'), 'utf8')
@@ -40,20 +65,21 @@ async function fetchInterviewQuestions(): Promise<InterviewQuestion[]> {
       scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
     })
     const sheets = google.sheets({ version: 'v4', auth })
+    // SPX Question columns: Question_Number, Category, Question, Role, Jawaban yang Diharapkan, Persentage jawaban, ...
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'AI Interview Question!A2:G100', // skip header
+      range: 'SPX Question!A2:G100',
     })
 
     return (res.data.values ?? [])
-      .filter((r: string[]) => r[2]?.trim()) // must have a question
+      .filter((r: string[]) => r[1]?.trim() === 'Interview' && r[2]?.trim())
       .map((r: string[]): InterviewQuestion => ({
-        category: r[1]?.trim() ?? '',
+        category: 'Interview',
         question: r[2]?.trim() ?? '',
-        purpose: r[3]?.trim() ?? '',
+        purpose: '',
         expectedAnswer: r[4]?.trim() ?? '',
-        redFlag: r[5]?.trim() ?? '',
-        position: r[6]?.trim() ?? 'Semua',
+        redFlag: '',
+        position: r[3]?.trim() || 'Semua',
       }))
   } catch (err) {
     logger.error({ event: 'fetch_interview_questions_error', err })
@@ -117,7 +143,7 @@ function filterQuestionsForJob(questions: InterviewQuestion[], job: string): Int
 
 // ─── AI interviewer instructions ─────────────────────────────────────────────
 
-function buildInstructions(name: string, job: string, lang: string, questions: InterviewQuestion[], faq: CandidateFAQ[]): string {
+function buildInstructions(name: string, job: string, lang: string, questions: InterviewQuestion[], faq: CandidateFAQ[], collectedData: Record<string, string> = {}): string {
   if (questions.length > 0) {
     // Group questions by category for structured flow
     const grouped = new Map<string, InterviewQuestion[]>()
@@ -152,6 +178,24 @@ function buildInstructions(name: string, job: string, lang: string, questions: I
       }
     }
 
+    // Build data validation section — what the candidate already answered during screening
+    let dataSection = ''
+    if (Object.keys(collectedData).length > 0) {
+      dataSection = '\n\nDATA KANDIDAT DARI SCREENING DASAR (sudah diisi sebelum interview):\n'
+      for (const [question, answer] of Object.entries(collectedData)) {
+        dataSection += `  - ${question}: ${answer}\n`
+      }
+      dataSection += `
+VALIDASI DATA — IMPORTANT:
+- Saat menanyakan pertanyaan interview yang terkait data di atas (contoh: nama, KTP, alamat, SIM, motor), bandingkan jawaban kandidat dengan data yang sudah diisi
+- Jika TIDAK COCOK atau ada perbedaan:
+  * Jangan langsung menolak
+  * Tanya ulang untuk klarifikasi: "Oh, tadi di form Anda isi X, tapi sekarang Anda bilang Y. Mana yang benar?"
+  * Catat inkonsistensi untuk recruiter
+- Jika COCOK: konfirmasi singkat dan lanjut ke pertanyaan berikutnya
+`
+    }
+
     return `Kamu adalah interviewer AI profesional untuk posisi ${job || 'umum'}.
 Kandidat bernama ${name || 'kandidat'}.
 
@@ -168,11 +212,12 @@ ATURAN:
 
 ALUR INTERVIEW:
 1. Tanyakan semua PERTANYAAN INTERVIEW di bawah secara berurutan
-2. Setelah SEMUA pertanyaan selesai, tanyakan: "Apakah ada yang ingin kamu tanyakan tentang posisi ini atau tentang perusahaan?"
-3. Jika kandidat bertanya, jawab menggunakan DATABASE JAWABAN di bawah. Jika pertanyaannya tidak ada di database, jawab "Itu pertanyaan bagus, nanti recruiter kami akan menjelaskan lebih detail saat interview lanjutan."
-4. Kandidat boleh bertanya beberapa kali. Setiap selesai menjawab, tanya lagi "Ada pertanyaan lain?"
-5. Jika kandidat bilang tidak ada pertanyaan lagi, ucapkan terima kasih dan tutup interview
-
+2. VALIDASI jawaban terhadap DATA KANDIDAT (jika tersedia) — minta klarifikasi kalau tidak cocok
+3. Setelah SEMUA pertanyaan selesai, tanyakan: "Apakah ada yang ingin kamu tanyakan tentang posisi ini atau tentang perusahaan?"
+4. Jika kandidat bertanya, jawab menggunakan DATABASE JAWABAN di bawah. Jika pertanyaannya tidak ada di database, jawab "Itu pertanyaan bagus, nanti recruiter kami akan menjelaskan lebih detail saat interview lanjutan."
+5. Kandidat boleh bertanya beberapa kali. Setiap selesai menjawab, tanya lagi "Ada pertanyaan lain?"
+6. Jika kandidat bilang tidak ada pertanyaan lagi, ucapkan terima kasih dan tutup interview
+${dataSection}
 PERTANYAAN INTERVIEW:
 ${questionList}${faqSection}`
   }
@@ -242,9 +287,12 @@ export async function handleRealtimeSession(req: Request): Promise<Response> {
   // Fetch interview questions + candidate FAQ from Google Sheets
   const [allQuestions, faq] = await Promise.all([fetchInterviewQuestions(), fetchCandidateFAQ()])
   const questions = filterQuestionsForJob(allQuestions, job ?? '')
-  logger.info({ event: 'realtime_data_loaded', questions: questions.length, faq: faq.length, job })
 
-  const instructions = buildInstructions(name ?? '', job ?? '', lang ?? 'id', questions, faq)
+  // Fetch candidate's collected answers from session storage (PostgreSQL)
+  const collectedAnswers = await loadCollectedAnswers(chat_id)
+  logger.info({ event: 'realtime_data_loaded', questions: questions.length, faq: faq.length, job, answers: Object.keys(collectedAnswers).length })
+
+  const instructions = buildInstructions(name ?? '', job ?? '', lang ?? 'id', questions, faq, collectedAnswers)
 
   try {
     const res = await fetch('https://api.openai.com/v1/realtime/sessions', {

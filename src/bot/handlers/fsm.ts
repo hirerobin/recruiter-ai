@@ -9,13 +9,12 @@
  * the underlying service functions instead of going through the tool framework.
  */
 import { InlineKeyboard } from 'grammy'
-import { FsmState, DATA_COLLECTION_FIELDS, type FileUploads } from '../../types/candidate'
+import { FsmState } from '../../types/candidate'
+import { loadDataNeeds, validateAnswer, buildPrompt, type DataNeedQuestion } from '../../mastra/tools/data-needs'
 import type { BotContext } from '../middleware/session'
 import {
-  buildConsentMessage, getFieldPrompt, validateField, applyField,
-  nextField, buildDataReview, getFilePrompt, nextFileStep,
-  buildPassMessage, buildFailMessage, buildFarewellMessage, buildAgeError,
-  type FileStep,
+  buildConsentMessage,
+  buildPassMessage, buildFailMessage, buildFarewellMessage,
 } from '../../mastra/workflows/screening-workflow'
 import { scoreCandidate } from '../../mastra/tools/scoring-tool'
 import { lookupJobRequirements } from '../../mastra/tools/job-lookup'
@@ -62,16 +61,34 @@ export async function triggerConfirmation(ctx: BotContext, appliedJob: string): 
 export async function handleConsentAgree(ctx: BotContext): Promise<void> {
   ctx.session.consentRecordedAt = new Date().toISOString()
   ctx.session.fsmState = FsmState.DATA_COLLECTION
-  ctx.session.currentField = DATA_COLLECTION_FIELDS[0]
   // Reset application data from any previous attempt
   ctx.session.candidateData = {}
   ctx.session.files = {}
+  ctx.session.currentQuestionIndex = 0
+  ctx.session.answers = {}
+  ctx.session.currentField = null
   await ctx.answerCallbackQuery()
-  const l = lang(ctx)
-  const intro = l === 'id'
-    ? '✅ Terima kasih. Mari kita mulai.\n\n'
-    : '✅ Thank you. Let\'s begin.\n\n'
-  await ctx.reply(intro + getFieldPrompt(DATA_COLLECTION_FIELDS[0], l), { parse_mode: 'Markdown' })
+
+  const questions = await loadDataNeeds()
+  if (questions.length === 0) {
+    await ctx.reply('⚠️ Tidak ada pertanyaan pendaftaran. Hubungi admin.')
+    return
+  }
+
+  await ctx.reply('✅ Terima kasih. Mari kita mulai.', { parse_mode: 'HTML' })
+  await askQuestion(ctx, questions, 0)
+}
+
+async function askQuestion(ctx: BotContext, questions: DataNeedQuestion[], index: number): Promise<void> {
+  const q = questions[index]
+  if (!q) return
+
+  // If it's an Upload Docs question, switch to FILE_UPLOAD state
+  if (q.type === 'Upload Docs') {
+    ctx.session.fsmState = FsmState.FILE_UPLOAD
+  }
+
+  await ctx.reply(buildPrompt(q, index, questions.length), { parse_mode: 'HTML' })
 }
 
 export async function handleConsentDecline(ctx: BotContext): Promise<void> {
@@ -93,161 +110,162 @@ export async function handleDataCollection(ctx: BotContext): Promise<void> {
   const text = ctx.message?.text?.trim()
   if (!text) return
 
-  const l = lang(ctx)
   const id = chatId(ctx)
-  const field = ctx.session.currentField
+  const questions = await loadDataNeeds()
+  const idx = ctx.session.currentQuestionIndex ?? 0
+  const q = questions[idx]
 
-  if (!field) {
-    await ctx.reply(buildDataReview(ctx.session.candidateData, l), { parse_mode: 'Markdown' })
+  if (!q) {
+    // Out of questions — finish data collection, go to scoring
+    await finishDataCollection(ctx, questions)
     return
   }
 
-  const { valid } = validateField(field, text)
+  // Skip text input for Upload Docs — they're handled by file handler
+  if (q.type === 'Upload Docs') {
+    await ctx.reply(`⚠️ Pertanyaan ini membutuhkan upload file, bukan teks. Silakan kirim file.`)
+    return
+  }
+
+  const { valid, error, parsed } = validateAnswer(q, text)
   if (!valid) {
-    await ctx.reply(field === 'age' ? buildAgeError(l) : `⚠️ Mohon isi dengan benar.`)
+    await ctx.reply(`⚠️ ${error}`)
     return
   }
 
-  ctx.session.candidateData = applyField(ctx.session.candidateData, field, text)
+  // Save answer
+  ctx.session.answers[q.questionNumber] = parsed ?? text.trim()
 
   // Fire-and-forget Sheets partial save
   writeToSheets({
     chat_id: id,
-    [field]: field === 'age' ? String(ctx.session.candidateData.age) : text.trim(),
+    [q.questionNumber]: parsed ?? text.trim(),
     status: 'partial',
   }).catch((err) => logger.error({ chat_id: id, event: 'sheets_partial_save_error', err }))
 
-  const next = nextField(field)
-  ctx.session.currentField = next
+  const nextIdx = idx + 1
+  ctx.session.currentQuestionIndex = nextIdx
 
-  if (!next) {
-    await ctx.reply(buildDataReview(ctx.session.candidateData, l), { parse_mode: 'Markdown' })
-  } else {
-    await ctx.reply(getFieldPrompt(next, l), { parse_mode: 'Markdown' })
+  if (nextIdx >= questions.length) {
+    await finishDataCollection(ctx, questions)
+    return
   }
+
+  await askQuestion(ctx, questions, nextIdx)
+}
+
+async function finishDataCollection(ctx: BotContext, questions: DataNeedQuestion[]): Promise<void> {
+  // All questions done — trigger scoring
+  ctx.session.fsmState = FsmState.SCORING
+  await ctx.reply('✅ Semua data terkumpul. Memproses penilaian...', { parse_mode: 'HTML' })
+  await runScoring(ctx)
 }
 
 // ─── Data review reply ────────────────────────────────────────────────────────
 
-export async function handleDataReviewReply(ctx: BotContext): Promise<void> {
-  const text = ctx.message?.text?.trim().toLowerCase() ?? ''
-  const l = lang(ctx)
-  const YES = ['ya', 'yes', 'y', 'iya', 'ok', 'benar', 'correct']
-  const NO = ['tidak', 'no', 'n', 'koreksi', 'correction', 'salah', 'wrong']
-
-  if (YES.includes(text)) {
-    ctx.session.fsmState = FsmState.FILE_UPLOAD
-    await ctx.reply(getFilePrompt('ktp', l), { parse_mode: 'Markdown' })
-  } else if (NO.includes(text)) {
-    ctx.session.currentField = DATA_COLLECTION_FIELDS[0]
-    ctx.session.candidateData = {}
-    await ctx.reply(getFieldPrompt(DATA_COLLECTION_FIELDS[0], l), { parse_mode: 'Markdown' })
-  } else {
-    await ctx.reply(
-      l === 'id'
-        ? 'Ketik *ya* untuk lanjut atau *tidak* untuk koreksi.'
-        : 'Type *yes* to continue or *no* to correct.',
-      { parse_mode: 'Markdown' }
-    )
-  }
-}
+// handleDataReviewReply removed — review step no longer needed with dynamic collection.
 
 // ─── File upload ──────────────────────────────────────────────────────────────
 
-function currentFileStep(files: FileUploads): FileStep | null {
-  if (!files.ktpPath) return 'ktp'
-  if (!files.photoPath) return 'photo'
-  if (!files.cvPath) return 'cv'
-  return null
-}
-
 export async function handleFileUpload(ctx: BotContext): Promise<void> {
-  const l = lang(ctx)
   const id = chatId(ctx)
-  const fileStep = currentFileStep(ctx.session.files)
 
-  logger.info({ chat_id: id, event: 'file_upload_start', fileStep, files: ctx.session.files })
+  const questions = await loadDataNeeds()
+  const idx = ctx.session.currentQuestionIndex ?? 0
+  const q = questions[idx]
 
-  if (!fileStep) {
-    logger.warn({ chat_id: id, event: 'file_upload_no_step' })
+  if (!q) {
+    logger.warn({ chat_id: id, event: 'file_upload_no_question', idx })
+    return
+  }
+
+  if (q.type !== 'Upload Docs') {
+    await ctx.reply(`⚠️ Pertanyaan ini butuh teks, bukan file. Silakan ketik jawaban Anda.`)
     return
   }
 
   const doc = ctx.message?.document
   const photo = ctx.message?.photo
+  const fileLabel = q.questionNumber.toLowerCase()
 
   let fileId: string, fileName: string, fileSize: number, mimeType: string | undefined
 
   if (doc) {
     fileId = doc.file_id
-    fileName = doc.file_name ?? `${fileStep}.bin`
+    fileName = doc.file_name ?? `${fileLabel}.bin`
     fileSize = doc.file_size ?? 0
     mimeType = doc.mime_type
   } else if (photo?.length) {
     const largest = photo.at(-1)!
     fileId = largest.file_id
-    fileName = `${fileStep}.jpg`
+    fileName = `${fileLabel}.jpg`
     fileSize = largest.file_size ?? 0
     mimeType = 'image/jpeg'
   } else {
-    await ctx.reply(getFilePrompt(fileStep, l), { parse_mode: 'Markdown' })
+    await ctx.reply(buildPrompt(q, idx, questions.length), { parse_mode: 'HTML' })
     return
   }
 
   try {
-    logger.info({ chat_id: id, event: 'file_downloading', fileStep, fileId })
-    const result = await downloadAndSaveFile({ chatId: id, fileId, fileName, fileSize, mimeType, fileType: fileStep })
+    logger.info({ chat_id: id, event: 'file_downloading', question: q.questionNumber, fileId })
+    const result = await downloadAndSaveFile({ chatId: id, fileId, fileName, fileSize, mimeType, fileType: 'cv' })
 
     if (!result.success) {
       await ctx.reply(`❌ ${result.error}`)
       return
     }
 
-    logger.info({ chat_id: id, event: 'file_downloaded', fileStep, path: result.path })
-
-    // Upload to Google Drive and use Drive URL for Sheets
+    // Upload to Drive
     let filePath = result.path
     try {
-      const driveResult = await uploadToDrive(id, result.path, fileStep)
-      if (driveResult.success && driveResult.driveUrl) {
-        filePath = driveResult.driveUrl
-        logger.info({ chat_id: id, event: 'drive_uploaded', fileStep, url: filePath })
-      }
+      const driveResult = await uploadToDrive(id, result.path, 'cv')
+      if (driveResult.success && driveResult.driveUrl) filePath = driveResult.driveUrl
     } catch (err) {
-      logger.error({ chat_id: id, event: 'drive_upload_error', fileStep, err })
+      logger.error({ chat_id: id, event: 'drive_upload_error', err })
     }
 
-    if (fileStep === 'ktp') ctx.session.files.ktpPath = filePath
-    else if (fileStep === 'photo') ctx.session.files.photoPath = filePath
-    else ctx.session.files.cvPath = filePath
+    // Save answer as file URL
+    ctx.session.answers[q.questionNumber] = filePath
+    writeToSheets({ chat_id: id, [q.questionNumber]: filePath, status: 'partial' })
+      .catch((err) => logger.error({ chat_id: id, event: 'sheets_partial_save_error', err }))
 
-    const confirm = l === 'id' ? `✅ ${fileStep.toUpperCase()} diterima.` : `✅ ${fileStep.toUpperCase()} received.`
-    const next = nextFileStep(fileStep)
+    await ctx.reply(`✅ File diterima.`)
 
-    if (next) {
-      await ctx.reply(confirm + '\n\n' + getFilePrompt(next, l), { parse_mode: 'Markdown' })
-    } else {
-      await ctx.reply(confirm)
+    const nextIdx = idx + 1
+    ctx.session.currentQuestionIndex = nextIdx
+
+    if (nextIdx >= questions.length) {
       ctx.session.fsmState = FsmState.SCORING
+      await ctx.reply('✅ Semua data terkumpul. Memproses penilaian...', { parse_mode: 'HTML' })
       await runScoring(ctx)
+      return
     }
+
+    // Next question — switch state if needed
+    const nextQ = questions[nextIdx]!
+    ctx.session.fsmState = nextQ.type === 'Upload Docs' ? FsmState.FILE_UPLOAD : FsmState.DATA_COLLECTION
+    await askQuestion(ctx, questions, nextIdx)
   } catch (err) {
-    logger.error({ chat_id: id, event: 'file_upload_error', fileStep, err })
-    await ctx.reply(
-      l === 'id'
-        ? '⚠️ Gagal memproses file. Silakan coba kirim ulang.'
-        : '⚠️ Failed to process file. Please try sending again.'
-    )
+    logger.error({ chat_id: id, event: 'file_upload_error', err })
+    await ctx.reply('⚠️ Gagal memproses file. Silakan coba kirim ulang.')
   }
 }
 
 // ─── Scoring ──────────────────────────────────────────────────────────────────
 
+/** Extract a specific field from dynamic answers by matching question keyword */
+async function extractAnswer(ctx: BotContext, keyword: string): Promise<string> {
+  const questions = await loadDataNeeds()
+  const match = questions.find((q) => q.question.toLowerCase().includes(keyword.toLowerCase()))
+  if (!match) return ''
+  return ctx.session.answers?.[match.questionNumber] ?? ''
+}
+
 async function runScoring(ctx: BotContext): Promise<void> {
   const id = chatId(ctx)
   const l = lang(ctx)
-  const data = ctx.session.candidateData
-  logger.info({ chat_id: id, event: 'scoring_start' })
+  const answers = ctx.session.answers ?? {}
+  logger.info({ chat_id: id, event: 'scoring_start', answer_count: Object.keys(answers).length })
 
   let passed = false
 
@@ -255,9 +273,27 @@ async function runScoring(ctx: BotContext): Promise<void> {
     const jobReqs = await lookupJobRequirements(ctx.session.appliedJob ?? '')
     logger.info({ chat_id: id, event: 'scoring_job_reqs', jobReqs })
 
+    // Extract age/education from dynamic answers
+    const nameAnswer = await extractAnswer(ctx, 'nama lengkap')
+    const ageRaw = await extractAnswer(ctx, 'usia') || await extractAnswer(ctx, 'umur') || await extractAnswer(ctx, 'tanggal lahir')
+    const educationAnswer = await extractAnswer(ctx, 'pendidika') || await extractAnswer(ctx, 'pendidikan')
+    const phoneAnswer = await extractAnswer(ctx, 'nomor hp') || await extractAnswer(ctx, 'nomor telepon') || await extractAnswer(ctx, 'whatsapp')
+    const locationAnswer = await extractAnswer(ctx, 'domisili') || await extractAnswer(ctx, 'alamat') || await extractAnswer(ctx, 'kota')
+
+    // Parse age from date or direct number
+    let age = 0
+    if (/^\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}$/.test(ageRaw)) {
+      const parts = ageRaw.split(/[\/-]/)
+      const year = parseInt(parts[2]!, 10)
+      const fullYear = year < 100 ? 1900 + year : year
+      age = new Date().getFullYear() - fullYear
+    } else {
+      age = parseInt(ageRaw, 10) || 0
+    }
+
     const result = scoreCandidate({
-      candidateAge: data.age ?? 0,
-      candidateEducation: data.education ?? '',
+      candidateAge: age,
+      candidateEducation: educationAnswer,
       candidateSimType: '',
       jobAgeRange: jobReqs.jobAgeRange,
       jobEducationMin: jobReqs.jobEducationMin,
@@ -270,18 +306,15 @@ async function runScoring(ctx: BotContext): Promise<void> {
 
     writeToSheets({
       chat_id: id,
-      name: data.name,
-      age: String(data.age ?? ''),
-      education: data.education,
-      phone: data.phone,
-      location: data.location,
+      name: nameAnswer,
+      age: String(age),
+      education: educationAnswer,
+      phone: phoneAnswer,
+      location: locationAnswer,
       applied_job: ctx.session.appliedJob ?? '',
       score: String(score),
       status: passed ? 'qualified' : 'rejected',
       fail_reason: failReason,
-      ktp_path: ctx.session.files.ktpPath,
-      photo_path: ctx.session.files.photoPath,
-      cv_path: ctx.session.files.cvPath,
     }).catch((err) => logger.error({ chat_id: id, event: 'sheets_final_save_error', err }))
 
     logger.info({ chat_id: id, event: 'scoring_done', score, passed })
@@ -308,12 +341,14 @@ async function runScoring(ctx: BotContext): Promise<void> {
     return
   }
 
+  const candidateName = await extractAnswer(ctx, 'nama lengkap')
+
   // ── AI Voice Interview (Mini App) ───────────────────────────────────────────
   if (passed && env.PUBLIC_URL) {
     const interviewParams = new URLSearchParams({
       chat_id: id,
       job: ctx.session.appliedJob ?? '',
-      name: data.name ?? '',
+      name: candidateName,
       lang: l,
     })
     const interviewUrl = `${env.PUBLIC_URL}/interview?${interviewParams}`
@@ -336,7 +371,6 @@ async function runScoring(ctx: BotContext): Promise<void> {
   if (passed) {
     const calendlyBase = env.CALENDLY_URL
     if (calendlyBase) {
-      const candidateName = data.name ?? ''
       // Pre-fill name in Calendly + register for webhook matching
       const params = new URLSearchParams({
         utm_content: id,

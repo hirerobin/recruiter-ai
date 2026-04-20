@@ -9,11 +9,12 @@ import { handleCandidateMessage } from './handlers/ask'
 import { handleAdminUpload } from './handlers/admin-upload'
 import {
   handleConsentAgree, handleConsentDecline,
-  handleDataCollection, handleDataReviewReply,
+  handleDataCollection,
   handleFileUpload,
   handleRejectionBrowse, handleRejectionExit,
 } from './handlers/fsm'
 import { handleInterviewBooking } from './handlers/interview'
+import { startIdleWatcher, handleIdleContinue, handleIdleRestart } from './idle-watcher'
 import {
   handleAdminLogin, handleAdminLogout, handleAdminSync,
   handleAdminStats, handleAdminMenu,
@@ -41,6 +42,10 @@ bot.callbackQuery('rejection:exit', handleRejectionExit)
 
 // ─── Interview scheduling ────────────────────────────────────────────────────
 bot.callbackQuery(/^interview:/, handleInterviewBooking)
+
+// ─── Idle callbacks ──────────────────────────────────────────────────────────
+bot.callbackQuery('idle:continue', handleIdleContinue)
+bot.callbackQuery('idle:restart', handleIdleRestart)
 
 // ─── Admin callbacks ─────────────────────────────────────────────────────────
 bot.callbackQuery('admin:sync', handleAdminSync)
@@ -81,10 +86,6 @@ bot.on('message:text', async (ctx) => {
   const state = ctx.session.fsmState
 
   if (state === FsmState.DATA_COLLECTION) {
-    // If no currentField set, we're in review mode
-    if (!ctx.session.currentField) {
-      return handleDataReviewReply(ctx)
-    }
     return handleDataCollection(ctx)
   }
 
@@ -111,14 +112,17 @@ export async function startBot(): Promise<void> {
   if (env.TELEGRAM_WEBHOOK_URL) {
     const secret = env.TELEGRAM_WEBHOOK_SECRET ?? ''
     const tgHandler = webhookCallback(bot, 'bun', { secretToken: secret || undefined })
-    Bun.serve({ port: 3000, fetch: (req) => routeRequest(req, tgHandler) })
+    Bun.serve({ port: 3000, fetch: (req: Request) => routeRequest(req, tgHandler) })
     await bot.api.setWebhook(env.TELEGRAM_WEBHOOK_URL, {
       secret_token: secret || undefined,
     })
     logger.info({ msg: 'bot started', mode: 'webhook', url: env.TELEGRAM_WEBHOOK_URL })
   } else {
-    Bun.serve({ port: 3000, fetch: (req) => routeRequest(req) })
+    Bun.serve({ port: 3000, fetch: (req: Request) => routeRequest(req) })
     bot.start()
     logger.info({ msg: 'bot started', mode: 'polling', webhookServer: 'http://localhost:3000' })
   }
+
+  // Start idle watcher (background task)
+  startIdleWatcher(bot)
 }

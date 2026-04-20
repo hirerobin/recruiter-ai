@@ -3,19 +3,16 @@ import { z } from 'zod'
 import { google } from 'googleapis'
 import { env } from '../../config/env'
 import { logger } from '../../logger'
+import { loadDataNeeds } from './data-needs'
 import type { PartialSheetsRow } from '../../types/sheets'
 
-const SHEET_COLUMNS = [
-  'chat_id', 'name', 'age', 'education', 'phone', 'location',
-  'applied_job', 'score', 'status', 'fail_reason',
-  'ktp_path', 'photo_path', 'cv_path', 'updated_at',
+// Core tracking columns (always present)
+const CORE_COLUMNS = [
+  'chat_id', 'applied_job', 'status', 'score', 'fail_reason',
+  'final_status', 'interview_date', 'interview_score', 'ai_interview_notes', 'updated_at',
 ]
 
-const HEADER_ROW = [...SHEET_COLUMNS, 'final_status', 'interview_date', 'ai_interview_notes', 'interview_score']
-
 function parsePemKey(raw: string): string {
-  // Bun reads .env literally — \n stays as two chars (backslash + n).
-  // Split on that literal sequence and rejoin with real newlines.
   return raw.includes('\n') ? raw : raw.split('\\n').join('\n')
 }
 
@@ -30,17 +27,49 @@ function getAuth() {
 const sheetName = env.GOOGLE_SHEETS_SHEET_NAME ?? 'Candidates'
 const spreadsheetId = env.GOOGLE_SHEETS_SPREADSHEET_ID
 
-async function ensureHeader(sheets: ReturnType<typeof google.sheets>): Promise<void> {
+let cachedColumns: string[] | null = null
+let cachedHeaders: string[] | null = null
+
+/**
+ * Build full column list: CORE + all Data_Needs question_numbers.
+ * Cached per process.
+ */
+async function getColumns(): Promise<{ keys: string[]; headers: string[] }> {
+  if (cachedColumns && cachedHeaders) return { keys: cachedColumns, headers: cachedHeaders }
+
+  const dataNeeds = await loadDataNeeds()
+  const dnKeys = dataNeeds.map((q) => q.questionNumber)
+  // Headers: human-readable question text for Data_Needs columns
+  const dnHeaders = dataNeeds.map((q) => q.question)
+
+  cachedColumns = [...CORE_COLUMNS, ...dnKeys]
+  cachedHeaders = [...CORE_COLUMNS, ...dnHeaders]
+  return { keys: cachedColumns, headers: cachedHeaders }
+}
+
+function colLetter(index: number): string {
+  // 0-based index → A, B, ..., Z, AA, AB, ...
+  let n = index
+  let s = ''
+  while (n >= 0) {
+    s = String.fromCharCode(65 + (n % 26)) + s
+    n = Math.floor(n / 26) - 1
+  }
+  return s
+}
+
+async function ensureHeader(sheets: ReturnType<typeof google.sheets>, headers: string[]): Promise<void> {
+  const lastCol = colLetter(headers.length - 1)
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${sheetName}!A1:Z1`,
+    range: `${sheetName}!A1:${lastCol}1`,
   })
-  if (!res.data.values?.length) {
+  if (!res.data.values?.length || res.data.values[0]!.length < headers.length) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `${sheetName}!A1`,
       valueInputOption: 'RAW',
-      requestBody: { values: [HEADER_ROW] },
+      requestBody: { values: [headers] },
     })
   }
 }
@@ -57,26 +86,33 @@ async function findRowByChatId(
   return idx === -1 ? null : idx + 1
 }
 
-async function upsertRow(row: PartialSheetsRow, retries = 3): Promise<void> {
+async function upsertRow(row: Record<string, string | undefined>, retries = 3): Promise<void> {
   const auth = getAuth()
   const sheets = google.sheets({ version: 'v4', auth })
+  const { keys, headers } = await getColumns()
+  const lastCol = colLetter(keys.length - 1)
 
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      await ensureHeader(sheets)
-      const existingRowNum = await findRowByChatId(sheets, row.chat_id)
+      await ensureHeader(sheets, headers)
+      const chatId = row.chat_id ?? ''
+      if (!chatId) {
+        logger.warn({ event: 'sheets_write_no_chatid' })
+        return
+      }
+
+      const existingRowNum = await findRowByChatId(sheets, chatId)
 
       if (existingRowNum) {
-        // Read existing row to preserve fields we're not updating
         const existing = await sheets.spreadsheets.values.get({
           spreadsheetId,
-          range: `${sheetName}!A${existingRowNum}:${String.fromCharCode(64 + SHEET_COLUMNS.length)}${existingRowNum}`,
+          range: `${sheetName}!A${existingRowNum}:${lastCol}${existingRowNum}`,
         })
         const currentValues = existing.data.values?.[0] ?? []
 
-        // Merge: only overwrite columns that have a non-undefined value in the new row
-        const mergedData = SHEET_COLUMNS.map((col, i) => {
-          const newVal = (row as Record<string, string | undefined>)[col]
+        // Merge: only overwrite columns with non-empty new values
+        const mergedData = keys.map((col, i) => {
+          const newVal = row[col]
           if (newVal !== undefined && newVal !== '') return newVal
           return currentValues[i] ?? ''
         })
@@ -88,10 +124,7 @@ async function upsertRow(row: PartialSheetsRow, retries = 3): Promise<void> {
           requestBody: { values: [mergedData] },
         })
       } else {
-        // New row — fill provided values, empty for the rest
-        const rowData = SHEET_COLUMNS.map((col) =>
-          (row as Record<string, string | undefined>)[col] ?? ''
-        )
+        const rowData = keys.map((col) => row[col] ?? '')
         await sheets.spreadsheets.values.append({
           spreadsheetId,
           range: `${sheetName}!A1`,
@@ -117,38 +150,21 @@ export interface ExtraColumns {
 
 /** Direct service call — fire-and-forget safe */
 export async function writeToSheets(row: PartialSheetsRow, extra?: ExtraColumns): Promise<void> {
-  // Skip if Google credentials are placeholder/unconfigured
   if (!env.GOOGLE_PRIVATE_KEY.startsWith('-----BEGIN')) {
     logger.debug({ chat_id: row.chat_id, event: 'sheets_skipped', reason: 'no valid credentials' })
     return
   }
-  await upsertRow({ ...row, updated_at: new Date().toISOString() })
 
-  // Write extra columns (after final_status) if provided
-  // Column layout: O=final_status, P=interview_date, Q=ai_interview_notes
-  if (extra?.interviewDate || extra?.aiInterviewNotes || extra?.interviewScore) {
-    const auth = getAuth()
-    const sheets = google.sheets({ version: 'v4', auth })
-    const existingRow = await findRowByChatId(sheets, row.chat_id)
-    if (existingRow) {
-      // Columns: O=final_status, P=interview_date, Q=ai_interview_notes, R=interview_score
-      const existing = await sheets.spreadsheets.values.get({
-        spreadsheetId,
-        range: `${sheetName}!P${existingRow}:R${existingRow}`,
-      })
-      const current = existing.data.values?.[0] ?? ['', '', '']
-      const newDate = extra.interviewDate ?? current[0] ?? ''
-      const newNotes = extra.aiInterviewNotes ?? current[1] ?? ''
-      const newScore = extra.interviewScore ?? current[2] ?? ''
-
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${sheetName}!P${existingRow}`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [[newDate, newNotes, newScore]] },
-      })
-    }
+  // Merge extra columns into the row (new dynamic schema handles them)
+  const merged: Record<string, string | undefined> = {
+    ...row,
+    updated_at: new Date().toISOString(),
   }
+  if (extra?.interviewDate) merged.interview_date = extra.interviewDate
+  if (extra?.aiInterviewNotes) merged.ai_interview_notes = extra.aiInterviewNotes
+  if (extra?.interviewScore) merged.interview_score = extra.interviewScore
+
+  await upsertRow(merged)
 }
 
 export const sheetsTool = createTool({
@@ -156,22 +172,15 @@ export const sheetsTool = createTool({
   description: 'Write or update a candidate record in Google Sheets (fire-and-forget).',
   inputSchema: z.object({
     chat_id: z.string(),
-    name: z.string().optional(),
-    age: z.string().optional(),
-    education: z.string().optional(),
-    phone: z.string().optional(),
-    location: z.string().optional(),
     applied_job: z.string().optional(),
     score: z.string().optional(),
     status: z.enum(['partial', 'qualified', 'rejected']).optional(),
     fail_reason: z.string().optional(),
-    ktp_path: z.string().optional(),
-    photo_path: z.string().optional(),
-    cv_path: z.string().optional(),
-  }),
-  execute: async ({ context }) => {
-    writeToSheets(context as PartialSheetsRow).catch((err) =>
-      logger.error({ chat_id: context.chat_id, event: 'sheets_write_failed', err })
+  }).passthrough(),
+  execute: async (inputData) => {
+    const row = inputData as unknown as PartialSheetsRow
+    writeToSheets(row).catch((err) =>
+      logger.error({ chat_id: row.chat_id, event: 'sheets_write_failed', err })
     )
     return { success: true }
   },

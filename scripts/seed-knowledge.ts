@@ -20,7 +20,7 @@ import { PgVector } from '@mastra/pg'
 import { env } from '../src/config/env'
 import { INDEX_NAME, EMBEDDING_DIMENSION } from '../src/mastra/rag/knowledge'
 
-const SKIP_SHEETS = ['Sheet5']
+const SKIP_SHEETS = ['Sheet5', 'AI Interview Question']
 const JOB_LIST_SHEET = 'List Job'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -154,7 +154,7 @@ async function readGenericSheet(spreadsheetId: string, sheetName: string): Promi
     return []
   }
 
-  const headers = rows[0].map((h) => h?.trim() ?? '')
+  const headers = (rows[0] ?? []).map((h) => h?.trim() ?? '')
   if (headers.every((h) => !h)) {
     console.log(`  Skipping '${sheetName}' — no headers`)
     return []

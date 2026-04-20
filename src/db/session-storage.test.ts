@@ -30,13 +30,13 @@ describe.if(isDbAvailable)('PostgresSessionStorage (integration)', () => {
   })
 
   test('write and read round-trip', async () => {
-    await storage.write(key, { language: 'id' })
+    await storage.write(key, { language: 'id' } as any)
     const result = await storage.read(key)
     expect(result).toEqual({ language: 'id' })
   })
 
   test('write is idempotent (upsert)', async () => {
-    await storage.write(key, { language: 'en' })
+    await storage.write(key, { language: 'en' } as any)
     const result = await storage.read(key)
     expect(result?.language).toBe('en')
   })

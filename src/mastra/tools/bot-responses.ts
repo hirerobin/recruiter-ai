@@ -57,17 +57,47 @@ export async function loadBotResponses(): Promise<BotResponse[]> {
 
 /**
  * Match user message against bot response templates.
+ * Uses word-boundary matching to avoid false positives (e.g. "p" matching "apa").
+ * Longer keywords matched first for priority (e.g. "ada lowongan" > "ada").
  * Returns the matched response or null.
  */
 export function matchResponse(message: string, responses: BotResponse[]): BotResponse | null {
   const lower = message.toLowerCase().trim()
+  // Tokenize: split on whitespace and punctuation
+  const words = new Set(lower.split(/[\s,.!?;:()]+/).filter(Boolean))
+
+  // Collect all matches with their keyword length (longer = more specific)
+  const matches: { response: BotResponse; kwLen: number }[] = []
 
   for (const r of responses) {
     for (const kw of r.keywords) {
-      if (lower === kw || lower.includes(kw)) {
-        return r
+      if (!kw) continue
+      const kwLower = kw.toLowerCase().trim()
+
+      // Multi-word keyword: match as phrase (substring, but whole phrase)
+      if (kwLower.includes(' ')) {
+        if (lower.includes(kwLower)) {
+          matches.push({ response: r, kwLen: kwLower.length })
+        }
+        continue
+      }
+
+      // Single-word keyword: match only on word boundary (not substring)
+      // Minimum 3 chars to avoid matching single letters like "p"
+      if (kwLower.length < 3) {
+        if (lower === kwLower) matches.push({ response: r, kwLen: kwLower.length })
+        continue
+      }
+
+      if (words.has(kwLower)) {
+        matches.push({ response: r, kwLen: kwLower.length })
       }
     }
   }
-  return null
+
+  if (!matches.length) return null
+
+  // Return the match with the longest keyword (most specific)
+  matches.sort((a, b) => b.kwLen - a.kwLen)
+  return matches[0]!.response
 }

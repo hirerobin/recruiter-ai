@@ -1,6 +1,11 @@
-import { Context, session, SessionFlavor } from 'grammy'
+import { Context, session, type SessionFlavor } from 'grammy'
 import type { StorageAdapter } from 'grammy'
 import type { FsmState, CandidateData, FileUploads, DataCollectionField } from '../../types/candidate'
+
+export interface JobListing {
+  title: string
+  location: string
+}
 
 export interface SessionData {
   language: 'id' | 'en' | null
@@ -11,6 +16,13 @@ export interface SessionData {
   candidateData: CandidateData
   files: FileUploads
   isAdmin: boolean
+  lastShownJobs: JobListing[]  // Tracks jobs shown in last agent response (for "daftar N")
+  // Dynamic data collection (from SPX Question sheet)
+  currentQuestionIndex: number                          // 0-based index into data needs list
+  answers: Record<string, string>                       // question_number → answer
+  // Idle detection
+  lastActivityAt: string | null                         // ISO timestamp of last user message
+  idlePromptSentAt: string | null                       // When the idle "still there?" prompt was sent
 }
 
 export type BotContext = Context & SessionFlavor<SessionData>
@@ -26,6 +38,11 @@ export function createSessionMiddleware(storage?: StorageAdapter<SessionData>) {
       candidateData: {},
       files: {},
       isAdmin: false,
+      lastShownJobs: [],
+      currentQuestionIndex: 0,
+      answers: {},
+      lastActivityAt: null,
+      idlePromptSentAt: null,
     }),
     ...(storage ? { storage } : {}),
   })
