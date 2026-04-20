@@ -30,6 +30,35 @@ import { logger } from '../../logger'
 const lang = (ctx: BotContext) => ctx.session.language ?? 'id'
 const chatId = (ctx: BotContext) => String(ctx.chat!.id)
 
+// ─── File naming helpers ───────────────────────────────────────────────────────
+
+const SLUG_STOP_WORDS = new Set([
+  'upload', 'kirimkan', 'silakan', 'berikan', 'lampirkan', 'sertakan',
+  'mohon', 'tolong', 'anda', 'dari', 'yang', 'untuk', 'dengan', 'ini',
+  'file', 'dokumen', 'gambar', 'image', 'foto', 'photo', 'send',
+])
+
+function questionToSlug(question: string): string {
+  const slug = question
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !SLUG_STOP_WORDS.has(w))
+    .join('_')
+    .slice(0, 40)
+  return slug || 'file'
+}
+
+function extFromMime(mime?: string): string {
+  if (!mime) return 'bin'
+  if (mime.includes('pdf')) return 'pdf'
+  if (mime.includes('png')) return 'png'
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg'
+  if (mime.includes('webp')) return 'webp'
+  if (mime.includes('heic')) return 'heic'
+  return 'bin'
+}
+
 // ─── Consent keyboard ─────────────────────────────────────────────────────────
 
 const consentKeyboard = new InlineKeyboard()
@@ -186,19 +215,20 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
 
   const doc = ctx.message?.document
   const photo = ctx.message?.photo
-  const fileLabel = q.questionNumber.toLowerCase()
+  const fileSlug = questionToSlug(q.question)
 
   let fileId: string, fileName: string, fileSize: number, mimeType: string | undefined
 
   if (doc) {
     fileId = doc.file_id
-    fileName = doc.file_name ?? `${fileLabel}.bin`
+    const origExt = doc.file_name?.split('.').pop() ?? extFromMime(doc.mime_type)
+    fileName = `${fileSlug}.${origExt}`
     fileSize = doc.file_size ?? 0
     mimeType = doc.mime_type
   } else if (photo?.length) {
     const largest = photo.at(-1)!
     fileId = largest.file_id
-    fileName = `${fileLabel}.jpg`
+    fileName = `${fileSlug}.jpg`
     fileSize = largest.file_size ?? 0
     mimeType = 'image/jpeg'
   } else {
