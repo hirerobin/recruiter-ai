@@ -398,8 +398,8 @@ async function runScoring(ctx: BotContext): Promise<void> {
 
     await ctx.reply(
       l === 'id'
-        ? '🎙 *Langkah berikutnya: AI Interview*\n\nSebelum interview dengan recruiter, silakan lakukan interview singkat dengan AI kami (5-10 menit).'
-        : '🎙 *Next step: AI Interview*\n\nBefore the recruiter interview, please complete a short AI interview (5-10 minutes).',
+        ? '🎙 *Langkah berikutnya: AI Interview*\n\nSebelum interview dengan recruiter, silakan lakukan interview singkat dengan AI kami (5-10 menit).\n\n📌 *Tips sebelum mulai:*\n• Cari tempat yang tenang dan minim kebisingan\n• Pastikan sinyal internet stabil\n• Gunakan headset/earphone jika ada\n• Berbicara dengan jelas dan tidak terburu-buru\n\nSiap? Tekan tombol di bawah untuk memulai. 👇'
+        : '🎙 *Next step: AI Interview*\n\nBefore the recruiter interview, please complete a short AI interview (5-10 minutes).\n\n📌 *Tips before starting:*\n• Find a quiet place with minimal background noise\n• Make sure your internet connection is stable\n• Use a headset/earphone if available\n• Speak clearly and at a steady pace\n\nReady? Tap the button below to begin. 👇',
       { parse_mode: 'Markdown', reply_markup: aiInterviewKb }
     )
   }
