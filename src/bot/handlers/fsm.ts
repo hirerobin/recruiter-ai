@@ -122,7 +122,8 @@ async function askQuestion(ctx: BotContext, questions: DataNeedQuestion[], index
     ctx.session.fsmState = FsmState.FILE_UPLOAD
   }
 
-  await ctx.reply(buildPrompt(q, index, questions.length), { parse_mode: 'HTML' })
+  const page = q.type === 'Upload Docs' ? (ctx.session.currentUploadPage ?? 1) : 1
+  await ctx.reply(buildPrompt(q, index, questions.length, page), { parse_mode: 'HTML' })
 }
 
 export async function handleConsentDecline(ctx: BotContext): Promise<void> {
@@ -221,29 +222,32 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
   const doc = ctx.message?.document
   const photo = ctx.message?.photo
   const fileSlug = questionToSlug(q.question)
+  const uploadCount = q.uploadCount ?? 1
+  const page = ctx.session.currentUploadPage ?? 1
+  const pageSlug = uploadCount > 1 ? `${fileSlug}_halaman_${page}` : fileSlug
 
   let fileId: string, fileName: string, fileSize: number, mimeType: string | undefined
 
   if (doc) {
     fileId = doc.file_id
     const origExt = doc.file_name?.split('.').pop() ?? extFromMime(doc.mime_type)
-    fileName = `${fileSlug}.${origExt}`
+    fileName = `${pageSlug}.${origExt}`
     fileSize = doc.file_size ?? 0
     mimeType = doc.mime_type
   } else if (photo?.length) {
     const largest = photo.at(-1)!
     fileId = largest.file_id
-    fileName = `${fileSlug}.jpg`
+    fileName = `${pageSlug}.jpg`
     fileSize = largest.file_size ?? 0
     mimeType = 'image/jpeg'
   } else {
-    await ctx.reply(buildPrompt(q, idx, questions.length), { parse_mode: 'HTML' })
+    await ctx.reply(buildPrompt(q, idx, questions.length, page), { parse_mode: 'HTML' })
     return
   }
 
   try {
     const storeId = getSheetsId(ctx)
-    logger.info({ chat_id: id, event: 'file_downloading', question: q.questionNumber, fileId })
+    logger.info({ chat_id: id, event: 'file_downloading', question: q.questionNumber, page, fileId })
     const result = await downloadAndSaveFile({ chatId: storeId, fileId, fileName, fileSize, mimeType, fileType: 'cv' })
 
     if (!result.success) {
@@ -260,9 +264,20 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
       logger.error({ chat_id: id, event: 'drive_upload_error', err })
     }
 
-    // Save answer as file URL
-    ctx.session.answers[q.questionNumber] = filePath
-    writeToSheets({ chat_id: getSheetsId(ctx), [q.questionNumber]: filePath, status: 'partial' })
+    // Accumulate multi-page URLs (comma-separated in the same answer key)
+    const existing = ctx.session.answers[q.questionNumber]
+    ctx.session.answers[q.questionNumber] = existing ? `${existing}, ${filePath}` : filePath
+
+    if (uploadCount > 1 && page < uploadCount) {
+      // More pages needed — ask for next page, stay on same question
+      ctx.session.currentUploadPage = page + 1
+      await ctx.reply(`✅ Halaman ${page} diterima. Sekarang kirim halaman ${page + 1} dari ${uploadCount}.`)
+      return
+    }
+
+    // All pages done — save to Sheets and advance
+    ctx.session.currentUploadPage = 1
+    writeToSheets({ chat_id: getSheetsId(ctx), [q.questionNumber]: ctx.session.answers[q.questionNumber]!, status: 'partial' })
       .catch((err) => logger.error({ chat_id: id, event: 'sheets_partial_save_error', err }))
 
     await ctx.reply(`✅ File diterima.`)

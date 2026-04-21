@@ -23,6 +23,7 @@ export interface SessionData {
   pendingApplyJob: JobListing | null  // Job the candidate is currently viewing detail for
   // Dynamic data collection (from SPX Question sheet)
   currentQuestionIndex: number                          // 0-based index into data needs list
+  currentUploadPage: number                             // 1-based page counter for multi-upload questions
   answers: Record<string, string>                       // question_number → answer
   // Idle detection
   lastActivityAt: string | null                         // ISO timestamp of last user message
@@ -46,6 +47,7 @@ export function createSessionMiddleware(storage?: StorageAdapter<SessionData>) {
       isAdmin: false,
       lastShownJobs: [],
       currentQuestionIndex: 0,
+      currentUploadPage: 1,
       answers: {},
       lastActivityAt: null,
       idlePromptSentAt: null,

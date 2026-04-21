@@ -12,7 +12,8 @@ export interface DataNeedQuestion {
   questionNumber: string  // e.g. "Quesiton_1"
   question: string         // prompt text
   type: DataFieldType
-  rules: string            // e.g. "16" for NIK length
+  rules: string            // e.g. "16" for NIK length; for Upload Docs = number of pages required
+  uploadCount: number      // for Upload Docs: how many pages to collect (parsed from rules, default 1)
   choices: string[]        // for Text with options
 }
 
@@ -48,11 +49,14 @@ export async function loadDataNeeds(force = false): Promise<DataNeedQuestion[]> 
         const type: DataFieldType = ['Text', 'Boolean', 'Number', 'Date', 'Upload Docs'].includes(rawType)
           ? rawType
           : 'Text'
+        const rules = r[7]?.trim() ?? ''
+        const uploadCount = type === 'Upload Docs' ? (Number.parseInt(rules, 10) || 1) : 1
         return {
           questionNumber: r[0]?.trim() ?? '',
           question: r[2]?.trim() ?? '',
           type,
-          rules: r[7]?.trim() ?? '',
+          rules,
+          uploadCount,
           choices,
         }
       })
@@ -111,7 +115,7 @@ export function validateAnswer(q: DataNeedQuestion, value: string): { valid: boo
 }
 
 /** Build prompt text for a question */
-export function buildPrompt(q: DataNeedQuestion, index: number, total: number): string {
+export function buildPrompt(q: DataNeedQuestion, index: number, total: number, uploadPage = 1): string {
   let prompt = `📝 <b>Pertanyaan ${index + 1}/${total}</b>\n\n${q.question}`
 
   if (q.type === 'Boolean') {
@@ -122,7 +126,11 @@ export function buildPrompt(q: DataNeedQuestion, index: number, total: number): 
   } else if (q.type === 'Date') {
     prompt += '\n\n<i>Format: DD/MM/YYYY (contoh: 25/12/1995)</i>'
   } else if (q.type === 'Upload Docs') {
-    prompt += '\n\n<i>Upload file (gambar/PDF, maks 20MB)</i>'
+    if (q.uploadCount > 1) {
+      prompt += `\n\n<i>Upload halaman ${uploadPage} dari ${q.uploadCount} (gambar/PDF, maks 20MB)</i>`
+    } else {
+      prompt += '\n\n<i>Upload file (gambar/PDF, maks 20MB)</i>'
+    }
   } else if (q.choices.length > 0) {
     prompt += `\n\n<i>Pilihan: ${q.choices.join(' / ')}</i>`
   }
