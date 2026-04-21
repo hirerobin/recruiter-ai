@@ -22,8 +22,6 @@ import { downloadAndSaveFile } from '../../mastra/tools/files-tool'
 import { uploadToDrive } from '../../mastra/tools/drive-upload'
 import { writeToSheets } from '../../mastra/tools/sheets-tool'
 import { sendRecruiterNotification } from '../../mastra/tools/notify-tool'
-import { sendInterviewScheduler } from './interview'
-import { setPendingInterview } from './calendly-webhook'
 import { env } from '../../config/env'
 import { logger } from '../../logger'
 
@@ -404,40 +402,40 @@ async function runScoring(ctx: BotContext): Promise<void> {
     )
   }
 
-  // ── Calendly scheduling ────────────────────────────────────────────────────
+  // ── Calendly scheduling (disabled — re-enable when ready) ────────────────
+  // if (passed) {
+  //   const calendlyBase = env.CALENDLY_URL
+  //   if (calendlyBase) {
+  //     const params = new URLSearchParams({
+  //       utm_content: id,
+  //       utm_campaign: ctx.session.appliedJob ?? '',
+  //       name: candidateName,
+  //     })
+  //     const calendlyUrl = `${calendlyBase}?${params}`
+  //     if (candidateName) {
+  //       setPendingInterview(candidateName, id, ctx.session.appliedJob ?? '')
+  //     }
+  //     await ctx.reply(
+  //       l === 'id'
+  //         ? `📅 *Jadwalkan interview Anda:*\n\n👉 ${calendlyUrl}\n\nSilakan pilih waktu yang tersedia di link tersebut.`
+  //         : `📅 *Schedule your interview:*\n\n👉 ${calendlyUrl}\n\nPlease pick an available time slot.`,
+  //       { parse_mode: 'Markdown' }
+  //     )
+  //   } else {
+  //     try {
+  //       await sendInterviewScheduler(ctx)
+  //     } catch (err) {
+  //       logger.error({ chat_id: id, event: 'interview_scheduler_error', err })
+  //       await ctx.reply(
+  //         l === 'id'
+  //           ? '📅 Recruiter akan segera menghubungi Anda untuk menjadwalkan interview.'
+  //           : '📅 The recruiter will contact you shortly to schedule the interview.'
+  //       )
+  //     }
+  //   }
+  //   ctx.session.fsmState = FsmState.CANDIDATE_ASKING
+  // }
   if (passed) {
-    const calendlyBase = env.CALENDLY_URL
-    if (calendlyBase) {
-      // Pre-fill name in Calendly + register for webhook matching
-      const params = new URLSearchParams({
-        utm_content: id,
-        utm_campaign: ctx.session.appliedJob ?? '',
-        name: candidateName,
-      })
-      const calendlyUrl = `${calendlyBase}?${params}`
-      // Store name→chatId mapping so Calendly webhook can match the booking
-      if (candidateName) {
-        setPendingInterview(candidateName, id, ctx.session.appliedJob ?? '')
-      }
-      await ctx.reply(
-        l === 'id'
-          ? `📅 *Jadwalkan interview Anda:*\n\n👉 ${calendlyUrl}\n\nSilakan pilih waktu yang tersedia di link tersebut.`
-          : `📅 *Schedule your interview:*\n\n👉 ${calendlyUrl}\n\nPlease pick an available time slot.`,
-        { parse_mode: 'Markdown' }
-      )
-    } else {
-      // Fallback: built-in scheduler
-      try {
-        await sendInterviewScheduler(ctx)
-      } catch (err) {
-        logger.error({ chat_id: id, event: 'interview_scheduler_error', err })
-        await ctx.reply(
-          l === 'id'
-            ? '📅 Recruiter akan segera menghubungi Anda untuk menjadwalkan interview.'
-            : '📅 The recruiter will contact you shortly to schedule the interview.'
-        )
-      }
-    }
     ctx.session.fsmState = FsmState.CANDIDATE_ASKING
   }
 }
