@@ -242,8 +242,9 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
   }
 
   try {
+    const storeId = getSheetsId(ctx)
     logger.info({ chat_id: id, event: 'file_downloading', question: q.questionNumber, fileId })
-    const result = await downloadAndSaveFile({ chatId: id, fileId, fileName, fileSize, mimeType, fileType: 'cv' })
+    const result = await downloadAndSaveFile({ chatId: storeId, fileId, fileName, fileSize, mimeType, fileType: 'cv' })
 
     if (!result.success) {
       await ctx.reply(`❌ ${result.error}`)
@@ -253,7 +254,7 @@ export async function handleFileUpload(ctx: BotContext): Promise<void> {
     // Upload to Drive
     let filePath = result.path
     try {
-      const driveResult = await uploadToDrive(id, result.path, 'cv')
+      const driveResult = await uploadToDrive(storeId, result.path, 'cv')
       if (driveResult.success && driveResult.driveUrl) filePath = driveResult.driveUrl
     } catch (err) {
       logger.error({ chat_id: id, event: 'drive_upload_error', err })
