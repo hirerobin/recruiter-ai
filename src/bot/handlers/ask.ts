@@ -3,6 +3,7 @@ import { logger } from '../../logger'
 import { consumePendingApply } from '../apply-trigger'
 import { triggerConfirmation } from './fsm'
 import { loadBotResponses, matchResponse } from '../../mastra/tools/bot-responses'
+import { lookupFullJobDetail } from '../../mastra/tools/job-lookup'
 import type { BotContext, JobListing } from '../middleware/session'
 
 const APOLOGY = '⚠️ Maaf, saya sedang mengalami gangguan teknis. Tim kami telah diberitahu dan akan segera membantu Anda.'
@@ -16,21 +17,26 @@ async function sendReply(ctx: BotContext, reply: string): Promise<void> {
 }
 
 /**
- * Parse numbered job listings from agent reply.
- * Matches patterns like:
+ * Parse numbered job cards from agent reply.
+ * Each card format (4 lines):
  *   1️⃣ <b>Title</b> — Location
- *   2. <b>Title</b> — Location
+ *   🏢 Company
+ *   📋 Requirements
+ *   💰 Salary
  */
 function parseJobsFromReply(reply: string): JobListing[] {
   const jobs: JobListing[] = []
-  // Match numbered jobs (emoji numbers or "N.")
-  const regex = /(?:[1-9]️⃣|[1-9]\.)\s*<b>([^<]+)<\/b>\s*[—–-]\s*([^\n]+)/g
+  // Split into individual cards by numbered emoji/dot headers
+  const cardRegex = /([1-9]️⃣|[1-9]\.)\s*<b>([^<]+)<\/b>\s*[—–-]\s*([^\n]+)([\s\S]*?)(?=[1-9]️⃣|[1-9]\.|$)/g
   let match: RegExpExecArray | null
-  while ((match = regex.exec(reply)) !== null) {
-    jobs.push({
-      title: match[1]!.trim(),
-      location: match[2]!.trim(),
-    })
+  while ((match = cardRegex.exec(reply)) !== null) {
+    const title = match[2]!.trim()
+    const location = match[3]!.trim()
+    const body = match[4] ?? ''
+    const company = /🏢\s*(.+)/.exec(body)?.[1]?.trim()
+    const requirements = /📋\s*(.+)/.exec(body)?.[1]?.trim()
+    const salary = /💰\s*(.+)/.exec(body)?.[1]?.trim()
+    jobs.push({ title, location, company, requirements, salary })
   }
   return jobs
 }
@@ -57,6 +63,29 @@ function parseSelectNumber(text: string): number | null {
   if (!match) return null
   const n = parseInt(match[1]!, 10)
   return n > 0 && n <= 20 ? n : null
+}
+
+/** Render a full job detail card from session data + optional pgvector enrichment */
+async function showJobDetail(ctx: BotContext, job: JobListing): Promise<void> {
+  // Try to enrich with description/benefit from pgvector
+  const detail = await lookupFullJobDetail(job.title)
+
+  const company     = detail?.company     || job.company     || ''
+  const requirements = detail?.requirements || job.requirements || ''
+  const salary      = detail?.salary      || job.salary      || ''
+  const description = detail?.description || ''
+  const benefit     = detail?.benefit     || ''
+
+  const lines: string[] = [`<b>${job.title}</b> — ${job.location}`]
+  if (company)      lines.push(`🏢 ${company}`)
+  if (description)  lines.push(`📄 <i>${description}</i>`)
+  if (requirements) lines.push(`📋 ${requirements}`)
+  if (salary)       lines.push(`💰 ${salary}`)
+  if (benefit)      lines.push(`🎁 ${benefit}`)
+  lines.push('')
+  lines.push(`Tertarik? Ketik <b>daftar</b> atau <b>ya</b> untuk melamar posisi ini. 😊`)
+
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' })
 }
 
 export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
@@ -134,11 +163,13 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
         await applyJob(jobs[0]!)
         return
       }
-      // Multiple jobs — set pendingApplyJob so next message applies directly
-      ctx.session.pendingApplyJob = jobs[idx]!
-      logger.info({ chat_id: chatId, event: 'job_selected', number: selectNumber, job: jobs[idx]!.title })
+      // Multiple jobs — show detail bot-side, set pendingApplyJob
+      const selected = jobs[idx]!
+      ctx.session.pendingApplyJob = selected
+      logger.info({ chat_id: chatId, event: 'job_selected', number: selectNumber, job: selected.title })
+      await showJobDetail(ctx, selected)
+      return
     }
-    // Fall through to agent to show job detail
   }
 
   // 2. Check bot response templates from Sheets (greeting, thanks, farewell, etc.)

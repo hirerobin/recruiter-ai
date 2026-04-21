@@ -20,6 +20,19 @@ export interface JobLookupResult {
   recruiterNumber?: string
 }
 
+export interface FullJobDetail {
+  title: string
+  location: string
+  company: string
+  description: string
+  requirements: string   // formatted single line e.g. "Usia 25-40 · SMA/SMK · SIM B1"
+  salary: string
+  benefit: string
+  postTest: string
+  recruiterName: string
+  recruiterNumber: string
+}
+
 const FALLBACK: JobLookupResult = {
   jobAgeRange: '18-55',
   jobEducationMin: 'SMA',
@@ -66,5 +79,49 @@ export async function lookupJobRequirements(jobTitle: string): Promise<JobLookup
   } catch {
     // pgvector not reachable (e.g. Docker not running) — use fallback silently
     return FALLBACK
+  }
+}
+
+function parseFullJobDetail(text: string, metadata: Record<string, unknown>): FullJobDetail {
+  const field = (label: string) => {
+    const m = text.match(new RegExp(`${label}:\\s*(.+?)(?=\\n[A-Z]|$)`, 'si'))
+    return m?.[1]?.trim() ?? ''
+  }
+
+  const ageMatch = text.match(/Usia\s+(\d+\s*[-–]\s*\d+)\s*tahun/i)
+  const eduMatch = text.match(/Pendidikan\s+([A-Z0-9/]+)/i)
+  const simMatch = text.match(/SIM\s+([A-Z0-9]+)/i)
+
+  const agePart = ageMatch ? `Usia ${ageMatch[1]?.replace(/\s/g, '')}` : ''
+  const eduPart = eduMatch ? eduMatch[1]!.toUpperCase() : ''
+  const simPart = simMatch ? `SIM ${simMatch[1]}` : ''
+  const reqParts = [agePart, eduPart, simPart].filter(Boolean)
+
+  return {
+    title:        (metadata?.judul_job as string) || field('Posisi'),
+    location:     (metadata?.lokasi as string)    || field('Lokasi'),
+    company:      (metadata?.client as string)    || field('Perusahaan/Client'),
+    description:  field('Deskripsi'),
+    requirements: reqParts.join(' · '),
+    salary:       field('Gaji'),
+    benefit:      field('Benefit'),
+    postTest:     field('Post Test').replace(/^Tidak ada$/i, ''),
+    recruiterName:   (metadata?.recruiter_name as string)     || '',
+    recruiterNumber: (metadata?.recruitment_number as string) || '',
+  }
+}
+
+export async function lookupFullJobDetail(jobTitle: string): Promise<FullJobDetail | null> {
+  if (!jobTitle.trim()) return null
+  try {
+    const { embedding } = await embed({ model: EMBEDDING_MODEL, value: jobTitle })
+    const results = await pgVector.query({ indexName: INDEX_NAME, queryVector: embedding, topK: 1 })
+    const top = results[0]
+    if (!top) return null
+    const text = (top.metadata?.text as string) ?? ''
+    if (!text) return null
+    return parseFullJobDetail(text, (top.metadata ?? {}) as Record<string, unknown>)
+  } catch {
+    return null
   }
 }

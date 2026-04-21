@@ -5,6 +5,9 @@ import type { FsmState, CandidateData, FileUploads, DataCollectionField } from '
 export interface JobListing {
   title: string
   location: string
+  company?: string
+  requirements?: string  // e.g. "Usia 25-40 · SMA/SMK · SIM B1"
+  salary?: string
 }
 
 export interface SessionData {
