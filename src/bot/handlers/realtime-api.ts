@@ -437,24 +437,7 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
 
   // ── Notify candidate ─────────────────────────────────────────────────────────
   try {
-    let msg = `✅ *AI Interview selesai!*\n\n⏱ Durasi: ${durationMin} menit\n💬 ${transcript.length} pertanyaan & jawaban\n\nTerima kasih, ${name || 'kandidat'}!`
-
-    if (interviewScore) {
-      const scoreEmoji = interviewScore.passed ? '🎉' : '😔'
-      msg += `\n\n${scoreEmoji} *Hasil Interview: ${interviewScore.totalScore}/100*\n`
-
-      for (const b of interviewScore.breakdown) {
-        const icon = b.passed ? '✅' : '❌'
-        msg += `${icon} ${b.question} — *${b.aiScore}/100*\n`
-      }
-
-      msg += interviewScore.passed
-        ? '\n🎊 Selamat! Anda lulus tahap AI Interview. Recruiter akan menghubungi Anda.'
-        : '\n⚠️ Belum lulus tahap AI Interview. Jangan menyerah, terus tingkatkan kemampuan Anda!'
-    } else {
-      msg += '\n\nRecruiter akan menghubungi Anda.'
-    }
-
+    const msg = `✅ *AI Interview selesai!*\n\n⏱ Durasi: ${durationMin} menit\n💬 ${transcript.length} pertanyaan & jawaban\n\n_"Terima kasih telah meluangkan waktu untuk mengikuti proses interview ini. Tim kami akan segera menghubungi Anda untuk informasi mengenai proses selanjutnya. Semoga sukses! 🙏"_`
     await bot.api.sendMessage(chat_id, msg, { parse_mode: 'Markdown' })
   } catch (err) {
     logger.error({ event: 'realtime_notify_error', chat_id, err })
