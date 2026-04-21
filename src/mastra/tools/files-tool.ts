@@ -54,10 +54,9 @@ export async function downloadAndSaveFile(input: FileInput): Promise<FileResult>
     const res = await fetch(fileUrl)
     if (!res.ok) return { success: false, error: `Gagal mengunduh file: ${res.status}` }
 
-    const ext = extname(fileName) || '.bin'
     const dir = join('uploads', chatId)
     mkdirSync(dir, { recursive: true })
-    const localPath = join(dir, `${fileType}${ext}`)
+    const localPath = join(dir, fileName)
     writeFileSync(localPath, Buffer.from(await res.arrayBuffer()))
 
     logger.info({ chat_id: chatId, event: 'file_saved', file_type: fileType, path: localPath })

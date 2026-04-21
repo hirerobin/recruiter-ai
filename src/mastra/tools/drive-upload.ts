@@ -85,7 +85,7 @@ export async function uploadToDrive(
 
     const res = await drive.files.create({
       requestBody: {
-        name: `${fileType}_${fileName}`,
+        name: fileName,
         parents: [candidateFolderId],
       },
       media: {
