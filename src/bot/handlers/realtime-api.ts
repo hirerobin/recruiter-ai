@@ -13,6 +13,7 @@ import { writeToSheets } from '../../mastra/tools/sheets-tool'
 import { uploadToDrive } from '../../mastra/tools/drive-upload'
 import { scoreInterviewTranscript, formatScoreDetail } from '../../mastra/tools/interview-scoring-tool'
 import { loadDataNeeds } from '../../mastra/tools/data-needs'
+import { trackUsage, getSessionSummary, clearSession } from '../../mastra/tools/usage-tracker'
 import { pool } from '../../db/client'
 import { logger } from '../../logger'
 
@@ -422,6 +423,10 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
   try {
     interviewScore = await scoreInterviewTranscript(transcript)
     logger.info({ event: 'interview_scored', chat_id, score: interviewScore.totalScore, passed: interviewScore.passed })
+    trackUsage(chat_id, 'gpt-4o', interviewScore.inputTokens, interviewScore.outputTokens)
+
+    const usageSummary = getSessionSummary(chat_id) ?? undefined
+    clearSession(chat_id)
 
     await writeToSheets(
       { chat_id, status: interviewScore.passed ? 'qualified' : 'rejected' },
@@ -429,6 +434,7 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
         aiInterviewNotes: notesWithAudio,
         interviewScore: String(interviewScore.totalScore),
         interviewScoreDetail: formatScoreDetail(interviewScore),
+        usageSummary,
       },
     )
   } catch (err) {

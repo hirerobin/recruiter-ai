@@ -128,12 +128,12 @@ const answerScoreSchema = z.object({
 async function scoreWithAI(
   transcript: string,
   rubric: ScoringRubricItem[],
-): Promise<Map<string, { candidateAnswer: string; score: number; analysis: string }>> {
+): Promise<{ scores: Map<string, { candidateAnswer: string; score: number; analysis: string }>; inputTokens: number; outputTokens: number }> {
   const questionList = rubric.map((r) =>
     `- ID: ${r.questionId}\n  Pertanyaan: "${r.question}"\n  Jawaban yang diharapkan: "${r.expectedAnswer}"`
   ).join('\n\n')
 
-  const { object } = await generateObject({
+  const { object, usage } = await generateObject({
     model: openai('gpt-4o'),
     output: 'object',
     schema: answerScoreSchema,
@@ -155,24 +155,29 @@ INSTRUKSI PENILAIAN:
 - Untuk setiap pertanyaan, tulis analisis singkat (1–2 kalimat) dalam Bahasa Indonesia yang menjelaskan kenapa skor tersebut diberikan`,
   })
 
-  const result = new Map<string, { candidateAnswer: string; score: number; analysis: string }>()
+  const scores = new Map<string, { candidateAnswer: string; score: number; analysis: string }>()
   for (const item of object.items) {
-    result.set(item.questionId, { candidateAnswer: item.candidateAnswer, score: item.score, analysis: item.analysis })
+    scores.set(item.questionId, { candidateAnswer: item.candidateAnswer, score: item.score, analysis: item.analysis })
   }
-  return result
+  return { scores, inputTokens: usage?.inputTokens ?? 0, outputTokens: usage?.outputTokens ?? 0 }
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
+export interface InterviewScoreResultWithUsage extends InterviewScoreResult {
+  inputTokens: number
+  outputTokens: number
+}
+
 export async function scoreInterviewTranscript(
   transcriptLines: { role: string; text: string }[],
-): Promise<InterviewScoreResult> {
+): Promise<InterviewScoreResultWithUsage> {
   const transcriptText = transcriptLines
     .map((t) => `${t.role === 'user' ? 'Kandidat' : 'AI Interviewer'}: ${t.text}`)
     .join('\n')
 
   const rubricItems = await loadScoringRubric()
-  const aiScores = await scoreWithAI(transcriptText, rubricItems)
+  const { scores: aiScores, inputTokens, outputTokens } = await scoreWithAI(transcriptText, rubricItems)
   const breakdown: AnswerScore[] = []
 
   for (const item of rubricItems) {
@@ -199,6 +204,8 @@ export async function scoreInterviewTranscript(
     totalScore,
     passed: totalScore >= 60,
     breakdown,
+    inputTokens,
+    outputTokens,
   }
 }
 

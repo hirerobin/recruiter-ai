@@ -4,6 +4,7 @@ import { consumePendingApply } from '../apply-trigger'
 import { triggerConfirmation } from './fsm'
 import { loadBotResponses, matchResponse } from '../../mastra/tools/bot-responses'
 import { lookupFullJobDetail } from '../../mastra/tools/job-lookup'
+import { trackUsage } from '../../mastra/tools/usage-tracker'
 import type { BotContext, JobListing } from '../middleware/session'
 
 const APOLOGY = '⚠️ Maaf, saya sedang mengalami gangguan teknis. Tim kami telah diberitahu dan akan segera membantu Anda.'
@@ -207,6 +208,9 @@ export async function handleCandidateMessage(ctx: BotContext): Promise<void> {
       memory: { thread: chatId, resource: chatId },
     })
     reply = result.text ?? ''
+    if (result.totalUsage) {
+      trackUsage(chatId, 'gpt-4o', result.totalUsage.inputTokens ?? 0, result.totalUsage.outputTokens ?? 0)
+    }
   } catch (err) {
     logger.error({ chat_id: chatId, event: 'agent_error', err })
     reply = APOLOGY
