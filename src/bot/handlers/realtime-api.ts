@@ -13,7 +13,8 @@ import { writeToSheets } from '../../mastra/tools/sheets-tool'
 import { uploadToDrive } from '../../mastra/tools/drive-upload'
 import { scoreInterviewTranscript, formatScoreDetail } from '../../mastra/tools/interview-scoring-tool'
 import { loadDataNeeds } from '../../mastra/tools/data-needs'
-import { trackUsage, getSessionSummary, clearSession } from '../../mastra/tools/usage-tracker'
+import { trackUsage, getSessionSnapshot, getSessionSummary, clearSession } from '../../mastra/tools/usage-tracker'
+import { writeUsageToSheet } from '../../mastra/tools/usage-sheet'
 import { pool } from '../../db/client'
 import { logger } from '../../logger'
 
@@ -425,7 +426,8 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
     logger.info({ event: 'interview_scored', chat_id, score: interviewScore.totalScore, passed: interviewScore.passed })
     trackUsage(chat_id, 'gpt-4o', interviewScore.inputTokens, interviewScore.outputTokens)
 
-    const usageSummary = getSessionSummary(chat_id) ?? undefined
+    const snapshot = getSessionSnapshot(chat_id)
+    const usageSummary = snapshot?.summary ?? undefined
     clearSession(chat_id)
 
     await writeToSheets(
@@ -437,6 +439,12 @@ export async function handleRealtimeComplete(req: Request): Promise<Response> {
         usageSummary,
       },
     )
+
+    if (snapshot) {
+      writeUsageToSheet(chat_id, job ?? '', snapshot).catch((err) =>
+        logger.error({ event: 'usage_sheet_write_error', chat_id, err })
+      )
+    }
   } catch (err) {
     logger.error({ event: 'interview_scoring_error', chat_id, err })
   }

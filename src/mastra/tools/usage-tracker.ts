@@ -58,27 +58,51 @@ function calcCost(model: string, inputTokens: number, outputTokens: number): num
   return (inputTokens * price.input + outputTokens * price.output) / 1_000_000
 }
 
-export function getSessionSummary(storeId: string): string | null {
+export interface SessionSnapshot {
+  durationMin: number
+  models: Record<string, ModelUsage & { costUsd: number }>
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCostUsd: number
+  summary: string
+}
+
+export function getSessionSnapshot(storeId: string): SessionSnapshot | null {
   const s = sessions.get(storeId)
   if (!s) return null
 
   let totalCost = 0
   let totalInput = 0
   let totalOutput = 0
+  const models: SessionSnapshot['models'] = {}
   const lines: string[] = []
 
   for (const [model, usage] of Object.entries(s.models)) {
-    const cost = calcCost(model, usage.inputTokens, usage.outputTokens)
-    totalCost += cost
+    const costUsd = calcCost(model, usage.inputTokens, usage.outputTokens)
+    totalCost += costUsd
     totalInput += usage.inputTokens
     totalOutput += usage.outputTokens
-    const costStr = cost > 0 ? ` | $${cost.toFixed(4)}` : ''
+    models[model] = { ...usage, costUsd }
+    const costStr = costUsd > 0 ? ` | $${costUsd.toFixed(4)}` : ''
     lines.push(`${model}: in=${usage.inputTokens} out=${usage.outputTokens} calls=${usage.calls}${costStr}`)
   }
 
   const durationMin = Math.round((Date.now() - s.startedAt) / 60_000)
   const header = `Total: in=${totalInput} out=${totalOutput} | $${totalCost.toFixed(4)} | ${durationMin}min`
-  return [header, ...lines].join('\n')
+
+  return {
+    durationMin,
+    models,
+    totalInputTokens: totalInput,
+    totalOutputTokens: totalOutput,
+    totalCostUsd: totalCost,
+    summary: [header, ...lines].join('\n'),
+  }
+}
+
+/** @deprecated use getSessionSnapshot */
+export function getSessionSummary(storeId: string): string | null {
+  return getSessionSnapshot(storeId)?.summary ?? null
 }
 
 export function clearSession(storeId: string): void {
