@@ -112,13 +112,13 @@ export async function startBot(): Promise<void> {
   if (env.TELEGRAM_WEBHOOK_URL) {
     const secret = env.TELEGRAM_WEBHOOK_SECRET ?? ''
     const tgHandler = webhookCallback(bot, 'bun', { secretToken: secret || undefined })
-    Bun.serve({ port: 3000, fetch: (req: Request) => routeRequest(req, tgHandler) })
+    Bun.serve({ port: 3000, reusePort: true, fetch: (req: Request) => routeRequest(req, tgHandler) })
     await bot.api.setWebhook(env.TELEGRAM_WEBHOOK_URL, {
       secret_token: secret || undefined,
     })
     logger.info({ msg: 'bot started', mode: 'webhook', url: env.TELEGRAM_WEBHOOK_URL })
   } else {
-    Bun.serve({ port: 3000, fetch: (req: Request) => routeRequest(req) })
+    Bun.serve({ port: 3000, reusePort: true, fetch: (req: Request) => routeRequest(req) })
     bot.start()
     logger.info({ msg: 'bot started', mode: 'polling', webhookServer: 'http://localhost:3000' })
   }
